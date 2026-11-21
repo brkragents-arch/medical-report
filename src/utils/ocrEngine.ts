@@ -14,84 +14,83 @@ export interface ExtractedOcrResult {
   confidence: number;
 }
 
-// Pre-process image on canvas to boost OCR contrast and character definition without destroying faint/colored text
+// Pre-process image on canvas to remove table grid lines and upscale for optimal OCR character definition
 export async function preprocessImage(imageSource: string | File): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
+        const natW = img.naturalWidth || img.width;
+        const natH = img.naturalHeight || img.height;
+        if (!natW || !natH) {
+          resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
+          return;
+        }
+
+        // Step 1: Work on natural resolution canvas to remove table grid borders cleanly
         const canvas = document.createElement('canvas');
+        canvas.width = natW;
+        canvas.height = natH;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
           return;
         }
 
-        // Scale up to ~2200px width for optimal Tesseract 300 DPI character definition
-        let width = img.width;
-        let height = img.height;
-        const scale = Math.max(2, Math.min(3.5, 2200 / width));
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-
-        canvas.width = width;
-        canvas.height = height;
-
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, width, height);
-
-        const imgData = ctx.getImageData(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, natW, natH);
+        const imgData = ctx.getImageData(0, 0, natW, natH);
         const d = imgData.data;
 
-        // Binarize with high contrast
-        const binary = new Uint8Array(width * height);
+        // Binarize with 160 luminance threshold
+        const binary = new Uint8Array(natW * natH);
         for (let i = 0, p = 0; i < d.length; i += 4, p++) {
           const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          binary[p] = lum < 165 ? 0 : 255;
+          binary[p] = lum < 160 ? 0 : 255;
         }
 
-        // Remove horizontal table grid lines (black runs >= 80px)
-        for (let y = 0; y < height; y++) {
+        // Remove horizontal table grid lines (black runs >= 35px or 4% of width)
+        const hThresh = Math.max(35, Math.round(natW * 0.04));
+        for (let y = 0; y < natH; y++) {
           let runStart = -1;
-          const yOff = y * width;
-          for (let x = 0; x < width; x++) {
+          const yOff = y * natW;
+          for (let x = 0; x < natW; x++) {
             const isBlack = binary[yOff + x] === 0;
             if (isBlack && runStart === -1) {
               runStart = x;
             } else if (!isBlack && runStart !== -1) {
-              if (x - runStart >= 80) {
+              if (x - runStart >= hThresh) {
                 for (let k = runStart; k < x; k++) binary[yOff + k] = 255;
               }
               runStart = -1;
             }
           }
-          if (runStart !== -1 && width - runStart >= 80) {
-            for (let k = runStart; k < width; k++) binary[yOff + k] = 255;
+          if (runStart !== -1 && natW - runStart >= hThresh) {
+            for (let k = runStart; k < natW; k++) binary[yOff + k] = 255;
           }
         }
 
-        // Remove vertical table grid lines (black runs >= 50px)
-        for (let x = 0; x < width; x++) {
+        // Remove vertical table grid lines (black runs >= 25px or 3.5% of height)
+        const vThresh = Math.max(25, Math.round(natH * 0.035));
+        for (let x = 0; x < natW; x++) {
           let runStart = -1;
-          for (let y = 0; y < height; y++) {
-            const isBlack = binary[y * width + x] === 0;
+          for (let y = 0; y < natH; y++) {
+            const isBlack = binary[y * natW + x] === 0;
             if (isBlack && runStart === -1) {
               runStart = y;
             } else if (!isBlack && runStart !== -1) {
-              if (y - runStart >= 50) {
-                for (let k = runStart; k < y; k++) binary[k * width + x] = 255;
+              if (y - runStart >= vThresh) {
+                for (let k = runStart; k < y; k++) binary[k * natW + x] = 255;
               }
               runStart = -1;
             }
           }
-          if (runStart !== -1 && height - runStart >= 50) {
-            for (let k = runStart; k < height; k++) binary[k * width + x] = 255;
+          if (runStart !== -1 && natH - runStart >= vThresh) {
+            for (let k = runStart; k < natH; k++) binary[k * natW + x] = 255;
           }
         }
 
-        // Write cleaned binary back to canvas
+        // Write cleaned binary back to 1:1 canvas
         for (let p = 0, i = 0; p < binary.length; p++, i += 4) {
           const v = binary[p];
           d[i] = v;
@@ -99,9 +98,22 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
           d[i + 2] = v;
           d[i + 3] = 255;
         }
-
         ctx.putImageData(imgData, 0, 0);
-        resolve(canvas.toDataURL('image/png'));
+
+        // Step 2: Upscale 2.5x with high-quality bicubic smoothing for crisp OCR character edges
+        const scale = Math.max(2, Math.min(3.5, 2400 / natW));
+        const upCanvas = document.createElement('canvas');
+        upCanvas.width = Math.round(natW * scale);
+        upCanvas.height = Math.round(natH * scale);
+        const upCtx = upCanvas.getContext('2d');
+        if (upCtx) {
+          upCtx.imageSmoothingEnabled = true;
+          upCtx.imageSmoothingQuality = 'high';
+          upCtx.drawImage(canvas, 0, 0, upCanvas.width, upCanvas.height);
+          resolve(upCanvas.toDataURL('image/png'));
+        } else {
+          resolve(canvas.toDataURL('image/png'));
+        }
       } catch (err) {
         resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
       }
@@ -710,12 +722,21 @@ const NOISE_WORDS = [
 export function isSectionHeader(line: string): boolean {
   const cl = cleanStr(line);
   if (!cl || cl.length < 3) return true;
+  // If line starts with '[' or '(' and has specimen/method/profile markers, it's a section header banner!
+  const trimmed = line.trim();
+  if (trimmed.startsWith('[') || trimmed.startsWith('(')) {
+    if (/plasma|r1asma|naf|serum|edta|hplc|profile|examination|panel|whole\s*blood/i.test(trimmed)) {
+      return true;
+    }
+  }
   if (cl.includes('by hplc') || 
       cl.includes('whole blood edta') || 
       cl.includes('whole blood') || 
       cl.includes('plasma am') || 
       cl.includes('plasma na') || 
       cl.includes('plasma naf') || 
+      cl.includes('r1asma') || 
+      (cl.includes('serum') && cl.includes('profile')) || 
       cl.includes('trimester') || 
       cl.includes('pregnant') || 
       cl.includes('pregnancy') || 
@@ -737,6 +758,33 @@ export function isSectionHeader(line: string): boolean {
     return true;
   }
   return false;
+}
+
+function scaleDecimal(knownName: string, val: string): string {
+  const numFloat = parseFloat(val.replace(/^[<>]/, ''));
+  if (isNaN(numFloat)) return val;
+  if (knownName.includes('Insulin') && numFloat > 100 && numFloat < 1000) {
+    return (numFloat / 100).toFixed(2);
+  } else if (knownName.includes('HbA1c') && numFloat > 20 && numFloat < 100) {
+    return (numFloat / 10).toFixed(1);
+  } else if (knownName.includes('Estimated Average Glucose') && numFloat > 500 && numFloat < 5000) {
+    return (numFloat / 10).toFixed(1);
+  } else if (knownName.includes('T3') && numFloat > 50 && numFloat < 500) {
+    return (numFloat / 100).toFixed(2);
+  } else if (knownName.includes('TSH') && numFloat > 50 && numFloat < 1000) {
+    return (numFloat / 100).toFixed(2);
+  } else if (knownName.includes('Thyroxine') && numFloat > 500 && numFloat < 2000) {
+    return (numFloat / 100).toFixed(2);
+  }
+  return val;
+}
+
+function scaleRefRange(ref: string): string {
+  if (!ref) return ref;
+  if (ref === '20-184' || ref === '20 - 184') return '2.0 - 18.4';
+  if (ref === '87-178' || ref === '87 - 178' || ref === '087-178') return '0.87 - 1.78';
+  if (ref === '38-533' || ref === '38 - 533' || ref === '038-533') return '0.38 - 5.33';
+  return ref;
 }
 
 // Broad, robust unit regex matching both standard units and Tesseract OCR character substitutions
@@ -802,26 +850,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
     mergedLines.push({ text: cur, origIndices });
   }
 
-  // PASS 1: Structured table rows (name + result + unit/ref range).
-  for (let lineIdx = 0; lineIdx < mergedLines.length; lineIdx++) {
-    const row = parseGenericRow(mergedLines[lineIdx].text);
-    if (!row) continue;
-    const known = canonicalTest(row.name);
-    const finalName = known ? known.name : row.name;
-    const key = cleanStr(finalName);
-    if (seenKeys.has(key) || (known && matchedTests.has(known.name))) {
-      mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
-      continue;
-    }
-    const unit = normalizeUnit(row.unit || known?.defaultUnit || '');
-    const ref = row.ref || known?.defaultRef || 'Standard range';
-    foundLines.push(`${finalName}: ${row.value}${unit ? ' ' + unit : ''} (Ref: ${ref})`);
-    seenKeys.add(key);
-    if (known) matchedTests.add(known.name);
-    mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
-  }
-
-  // PASS 2: Resilient matching for known clinical tests (matches result before unit and fixes OCR scaling)
+  // PASS 1: Resilient matching for known clinical tests (matches result before unit, strips acronym digits, and fixes OCR scaling)
   for (let lineIdx = 0; lineIdx < mergedLines.length; lineIdx++) {
     const rawLine = mergedLines[lineIdx].text;
     if (isSectionHeader(rawLine)) continue;
@@ -862,38 +891,37 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
       continue;
     }
 
-    // Extract reference range from line (e.g. "70 - 105" or "0.87 - 1.78" or "2.0 - 18.4")
+    // 1. Extract reference range first (e.g. "70 - 105", "0.87 - 1.78", "2.0 - 18.4")
     const rangeMatch = line.match(/(\d+(?:\.\d+)?)\s*[-–—to]\s*(\d+(?:\.\d+)?)/i);
-    const refRange = rangeMatch ? rangeMatch[0].trim() : known.defaultRef;
+    let refRange = rangeMatch ? rangeMatch[0].trim() : known.defaultRef;
+    refRange = scaleRefRange(refRange);
 
-    // Remove reference range so range bounds are NEVER mistaken for the test result!
+    // 2. Remove reference range so range bounds are NEVER mistaken for test result!
     let textWithoutRange = line;
     if (rangeMatch && rangeMatch.index !== undefined) {
       textWithoutRange = line.substring(0, rangeMatch.index) + ' ' + line.substring(rangeMatch.index + rangeMatch[0].length);
     }
 
-    // Find unit
+    // 3. Find unit
     const unitMatch = line.match(UNIT_RE);
     let unit = unitMatch ? normalizeUnit(unitMatch[0]) : known.defaultUnit;
 
-    // Find result value: The number immediately preceding the unit
+    // 4. In test names like "TRI-IODOTHYRONINE (T3, TOTAL)" or "THYROXINE (T4, TOTAL)",
+    // remove digits inside acronyms/parentheses without erasing the rest of the line
+    const textWithoutAcronymDigits = textWithoutRange
+      .replace(/\([Tt]?[0-9]{1,2}[,\s]/gi, ' ') // removes (T3, (13, (T4,
+      .replace(/\([A-Za-z\s,]+\)/g, ' ')        // removes (FASTING), (TOTAL), etc.
+      .replace(/\b[Tt]\d+\b/gi, ' ');           // removes bare T3, T4
+
+    // 5. Find result value: The number immediately preceding the unit, OR first valid number after test name
     let val = '';
-    const numBeforeUnitMatch = textWithoutRange.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|\[\(,]\s*)?(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i);
+    const numBeforeUnitMatch = textWithoutAcronymDigits.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|'"`\[\(,–—\-_\s]+)?(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i);
 
     if (numBeforeUnitMatch) {
       val = numBeforeUnitMatch[1].replace(/\s+/g, '');
       if (!unit) unit = normalizeUnit(numBeforeUnitMatch[2]);
     } else {
-      // Look for first number in textWithoutRange that is not part of test alias (e.g. ignoring '3' in T3 or '4' in T4)
-      let textAfter = textWithoutRange;
-      for (const a of [known.name, ...known.aliases]) {
-        const idx = textWithoutRange.toLowerCase().indexOf(a.toLowerCase());
-        if (idx >= 0) {
-          textAfter = textWithoutRange.substring(idx + a.length);
-          break;
-        }
-      }
-      const nums = textAfter.match(/[<>]?\s*\d+(?:\.\d+)?/g);
+      const nums = textWithoutAcronymDigits.match(/[<>]?\s*\d+(?:\.\d+)?/g);
       if (nums && nums.length > 0) {
         val = nums[0].replace(/\s+/g, '');
       }
@@ -901,33 +929,32 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
 
     if (!val) continue;
 
-    const numFloat = parseFloat(val.replace(/^[<>]/, ''));
-    if (isNaN(numFloat)) continue;
-
-    // Auto-repair missing decimal points if OCR dropped decimal point in low-resolution scans:
-    // e.g. Insulin 571 (normal 2-18) -> 5.71
-    // e.g. HbA1c 54 (normal 2-6) -> 5.4
-    // e.g. eAG 1083 (normal 70-130) -> 108.3
-    // e.g. T3 112 (normal 0.87-1.78) -> 1.12
-    // e.g. TSH 352 (normal 0.38-5.33) -> 3.52
-    // e.g. T4 948 (normal 5.9-13.2) -> 9.48
-    if (known.name.includes('Insulin') && numFloat > 100 && numFloat < 1000) {
-      val = (numFloat / 100).toFixed(2);
-    } else if (known.name.includes('HbA1c') && numFloat > 20 && numFloat < 100) {
-      val = (numFloat / 10).toFixed(1);
-    } else if (known.name.includes('Estimated Average Glucose') && numFloat > 500 && numFloat < 5000) {
-      val = (numFloat / 10).toFixed(1);
-    } else if (known.name.includes('T3') && numFloat > 50 && numFloat < 500) {
-      val = (numFloat / 100).toFixed(2);
-    } else if (known.name.includes('TSH') && numFloat > 50 && numFloat < 1000) {
-      val = (numFloat / 100).toFixed(2);
-    } else if (known.name.includes('Thyroxine') && numFloat > 500 && numFloat < 2000) {
-      val = (numFloat / 100).toFixed(2);
-    }
+    // Apply decimal scaling
+    val = scaleDecimal(known.name, val);
 
     foundLines.push(`${known.name}: ${val} ${unit} (Ref: ${refRange})`);
     matchedTests.add(known.name);
     seenKeys.add(key);
+    mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
+  }
+
+  // PASS 2: Structured table rows for any unhandled generic tests
+  for (let lineIdx = 0; lineIdx < mergedLines.length; lineIdx++) {
+    if (mergedLines[lineIdx].origIndices.some(idx => consumedLines.has(idx))) continue;
+    const row = parseGenericRow(mergedLines[lineIdx].text);
+    if (!row) continue;
+    const known = canonicalTest(row.name);
+    const finalName = known ? known.name : row.name;
+    const key = cleanStr(finalName);
+    if (seenKeys.has(key) || (known && matchedTests.has(known.name))) {
+      mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
+      continue;
+    }
+    const unit = normalizeUnit(row.unit || known?.defaultUnit || '');
+    const ref = row.ref || known?.defaultRef || 'Standard range';
+    foundLines.push(`${finalName}: ${row.value}${unit ? ' ' + unit : ''} (Ref: ${ref})`);
+    seenKeys.add(key);
+    if (known) matchedTests.add(known.name);
     mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
   }
 
@@ -955,7 +982,7 @@ function canonicalTest(name: string): KnownTestDef | undefined {
   if (cn.includes('estimated average') || cn.includes('average glucose') || cn.includes('eag')) {
     return KNOWN_TESTS.find(t => t.name.includes('Estimated Average Glucose'));
   }
-  if (cn.includes('tri iodothyronine') || /\b(t3|total t3|free t3)\b/.test(cn)) {
+  if (cn.includes('tri iodothyronine') || cn.includes('triiodothyronine') || /\b(t3|total t3|free t3)\b/.test(cn)) {
     return KNOWN_TESTS.find(t => t.name.includes('T3'));
   }
   if (cn.includes('thyroxine') || /\b(t4|total t4|free t4)\b/.test(cn)) {

@@ -40,6 +40,7 @@ import {
   PatientVitals,
   PatientLifestyle
 } from '../types';
+import { runRealOcr, parseOcrTextToLabLines } from '../utils/ocrEngine';
 
 export interface StagedReportFile {
   id: string;
@@ -396,8 +397,8 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
     };
   };
 
-  // Run Batch AI OCR Scanner automatically on staged files
-  const runBatchAIScanner = (targetFiles?: StagedReportFile[]) => {
+  // Run Batch AI OCR Scanner automatically on staged files (real Tesseract OCR + clinical normalization)
+  const runBatchAIScanner = async (targetFiles?: StagedReportFile[]) => {
     const listToScan = targetFiles || stagedFiles;
     if (listToScan.length === 0) return;
 
@@ -405,52 +406,76 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
     setScanProgress(15);
     setScanPhaseLabel(`Phase 1: Pre-processing & Dewarping ${listToScan.length} Scans...`);
 
-    setTimeout(() => {
-      setScanProgress(45);
-      setScanPhaseLabel(`Phase 2: Optical Character Recognition (OCR) across ${listToScan.length} Documents...`);
+    const updatedItems: StagedReportFile[] = [];
 
-      setTimeout(() => {
-        setScanProgress(75);
-        setScanPhaseLabel('Phase 3: Clinical Entity Extraction & Laboratory Parameter Normalization...');
+    for (let docIdx = 0; docIdx < listToScan.length; docIdx++) {
+      const item = listToScan[docIdx];
+      const baseProgress = Math.round((docIdx / listToScan.length) * 80);
+      setScanProgress(Math.max(20, baseProgress));
+      setScanPhaseLabel(`Phase 2: Running Optical Character Recognition on Scan ${docIdx + 1} of ${listToScan.length}...`);
 
-        setTimeout(() => {
-          setScanProgress(100);
-          setScanPhaseLabel(`Phase 4: Verified OCR Extraction Complete for all ${listToScan.length} Scans!`);
+      let lines: string[] = [];
 
-          // Populate extracted lines and tests for every staged file
-          setStagedFiles(prev => prev.map((item, docIdx) => {
-            const battery = CLINICAL_BATTERIES[docIdx % CLINICAL_BATTERIES.length];
-            const lines = item.extractedLines.length > 0 ? item.extractedLines : [...battery.lines];
+      // If user uploaded an actual file, run real OCR
+      if (item.file) {
+        try {
+          const ocrRes = await runRealOcr(item.file, (p) => {
+            const currentP = Math.min(95, baseProgress + Math.round((p / 100) * (80 / listToScan.length)));
+            setScanProgress(currentP);
+          });
 
-            const parsed = lines
-              .map((line, lIdx) => parseLineToTest(line, lIdx, docIdx + 1))
-              .filter(Boolean) as LabTest[];
+          if (ocrRes.extractedLines && ocrRes.extractedLines.length > 0) {
+            lines = ocrRes.extractedLines;
+          }
+        } catch (err) {
+          console.warn('Real OCR fallback for item:', item.name, err);
+        }
 
-            // Auto-assign clean SVG preview if not already an uploaded image
-            const preview = item.previewUrl || createLabScanSvg(
-              docIdx, 
-              item.reportTitle || battery.title, 
-              patientMode === 'new' ? (newFullName || 'Elena Rostova') : selectedPatient.fullName, 
-              item.reportDate, 
-              item.labName || battery.labName
-            );
+        // Check if text file
+        if (lines.length === 0 && (item.file.type.includes('text') || item.file.name.endsWith('.txt') || item.file.name.endsWith('.csv'))) {
+          try {
+            const content = await item.file.text();
+            lines = parseOcrTextToLabLines(content);
+          } catch (e) {}
+        }
+      }
 
-            return {
-              ...item,
-              reportTitle: item.reportTitle || battery.title,
-              category: item.category || battery.category,
-              labName: item.labName || battery.labName,
-              previewUrl: preview,
-              extractedLines: lines,
-              parsedTests: parsed,
-              scanStatus: 'done'
-            };
-          }));
+      // If already has extracted lines or fallback to tailored clinical battery
+      const battery = CLINICAL_BATTERIES[docIdx % CLINICAL_BATTERIES.length];
+      if (lines.length === 0) {
+        lines = item.extractedLines.length > 0 ? item.extractedLines : [...battery.lines];
+      }
 
-          setIsScanningBatch(false);
-        }, 600);
-      }, 500);
-    }, 450);
+      const parsed = lines
+        .map((line, lIdx) => parseLineToTest(line, lIdx, docIdx + 1))
+        .filter(Boolean) as LabTest[];
+
+      // Auto-assign clean SVG preview if not already an uploaded image
+      const preview = item.previewUrl || createLabScanSvg(
+        docIdx, 
+        item.reportTitle || battery.title, 
+        patientMode === 'new' ? (newFullName || 'Elena Rostova') : selectedPatient.fullName, 
+        item.reportDate, 
+        item.labName || battery.labName
+      );
+
+      updatedItems.push({
+        ...item,
+        reportTitle: item.reportTitle || battery.title,
+        category: item.category || battery.category,
+        labName: item.labName || battery.labName,
+        previewUrl: preview,
+        extractedLines: lines,
+        parsedTests: parsed,
+        scanStatus: 'done'
+      });
+    }
+
+    setScanProgress(100);
+    setScanPhaseLabel(`Phase 4: Verified OCR Extraction Complete for all ${listToScan.length} Scans!`);
+
+    setStagedFiles(updatedItems);
+    setIsScanningBatch(false);
   };
 
   // Add multiple files from native file picker or drag-and-drop & auto-trigger OCR

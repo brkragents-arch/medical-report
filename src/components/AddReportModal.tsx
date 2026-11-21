@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Plus, 
@@ -8,14 +8,19 @@ import {
   CheckCircle2, 
   AlertCircle, 
   Trash2, 
-  UserPlus,
-  UserCheck,
-  Layers,
-  HelpCircle,
-  Calendar,
-  Droplet
+  UserPlus, 
+  UserCheck, 
+  Layers, 
+  HelpCircle, 
+  Calendar, 
+  Droplet,
+  Image as ImageIcon,
+  RefreshCw,
+  Check,
+  Eye,
+  FileCheck
 } from 'lucide-react';
-import { LabReport, LabTest, MedicalCategory, PatientProfile, ResultStatus, TestPriority, DoctorQuestion } from '../types';
+import { LabReport, LabTest, MedicalCategory, PatientProfile, ResultStatus, TestPriority, DoctorQuestion, OriginalReportBoundingBox } from '../types';
 
 interface AddReportModalProps {
   patientList: PatientProfile[];
@@ -39,6 +44,15 @@ ALT / SGPT: 48 U/L (Ref: 7 - 40)
 TSH: 5.8 mIU/L (Ref: 0.45 - 4.50)
 25-OH Vitamin D: 16.2 ng/mL (Ref: >= 30.0)`;
 
+interface ScannedReportDoc {
+  id: string;
+  name: string;
+  size: string;
+  type: string;
+  previewUrl?: string;
+  extractedLines: string[];
+}
+
 export const AddReportModal: React.FC<AddReportModalProps> = ({
   patientList,
   currentPatientId,
@@ -53,19 +67,31 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
     currentPatientId || (patientList.length > 0 ? patientList[0].id : '')
   );
 
-  // Patient Fields
-  const [patientName, setPatientName] = useState('Jordan Taylor');
-  const [dob, setDob] = useState('1982-05-18');
-  const [age, setAge] = useState<number>(44);
+  // Patient Demographics Fields
+  const [patientName, setPatientName] = useState('KSN');
+  const [dob, setDob] = useState('1986-03-03');
+  const [age, setAge] = useState<number>(40);
   const [gender, setGender] = useState<'Male' | 'Female' | 'Other'>('Female');
-  const [bloodGroup, setBloodGroup] = useState('O+');
+  const [bloodGroup, setBloodGroup] = useState('Unknown');
   const [mrn, setMrn] = useState(`MRN-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(100 + Math.random() * 900)}`);
-  const [referringDoctor, setReferringDoctor] = useState('Dr. Marcus Lee, MD');
+  const [referringDoctor, setReferringDoctor] = useState('');
   const [labName, setLabName] = useState('Quest & Labcorp Diagnostic Services');
   const [collectionDate, setCollectionDate] = useState('October 23, 2026 (08:00 AM)');
 
+  // Step 2 Input Mode: 'scan' vs 'paste'
+  const [inputMode, setInputMode] = useState<'scan' | 'paste'>('scan');
+
   // Quick Raw Text
   const [rawText, setRawText] = useState(PRESET_SAMPLE_TEXT);
+
+  // Scanned files state
+  const [scannedFiles, setScannedFiles] = useState<ScannedReportDoc[]>([]);
+  const [activeScannedDocId, setActiveScannedDocId] = useState<string>('');
+  const [isScanningOcr, setIsScanningOcr] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [dragActive, setDragActive] = useState(false);
+
+  const scanFileInputRef = useRef<HTMLInputElement>(null);
 
   // When switching existing patient selection, pre-populate details
   useEffect(() => {
@@ -81,12 +107,12 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
         setReferringDoctor(found.referringDoctor || 'Attending Physician');
       }
     } else {
-      // New patient defaults
-      setPatientName('');
-      setDob('1990-01-01');
-      setAge(36);
+      // New patient defaults matching user screenshot
+      setPatientName('KSN');
+      setDob('1986-03-03');
+      setAge(40);
       setGender('Female');
-      setBloodGroup('O+');
+      setBloodGroup('Unknown');
       setMrn(`MRN-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(100 + Math.random() * 900)}`);
       setReferringDoctor('');
     }
@@ -107,6 +133,210 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
         setAge(calculatedAge);
       }
     }
+  };
+
+  // Helper to create sanitized visual SVG preview for scanned slips
+  const createDocumentSvgPreview = (title: string, pName: string, lines: string[]) => {
+    const rows = lines.slice(0, 10).map((line, idx) => {
+      const colon = line.split(':');
+      const tName = colon[0].trim();
+      const rest = (colon[1] || '').trim();
+      const isHigh = line.includes('HIGH') || line.includes('*') || idx < 2;
+      const flag = isHigh ? 'HIGH *' : 'NORMAL';
+      const flagColor = isHigh ? '#b91c1c' : '#15803d';
+      const y = 190 + (idx * 26);
+      return `<text x="35" y="${y}" fill="#0f172a" font-family="monospace" font-size="11">${tName}</text><text x="270" y="${y}" fill="#0f172a" font-family="monospace" font-size="11">${rest.replace(/Ref:.*$/, '').trim()}</text><text x="440" y="${y}" fill="${flagColor}" font-family="monospace" font-size="11" font-weight="bold">${flag}</text>`;
+    }).join('');
+
+    const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="650" viewBox="0 0 560 650" fill="#ffffff">
+      <rect width="560" height="650" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+      <rect x="25" y="25" width="510" height="75" rx="6" fill="#0f766e"/>
+      <text x="40" y="55" fill="#ffffff" font-family="sans-serif" font-weight="bold" font-size="16">CLINICAL PATHOLOGY LABORATORY REPORT</text>
+      <text x="40" y="78" fill="#ccfbf1" font-family="sans-serif" font-size="10">PATIENT: ${pName.toUpperCase()} - DATE: ${collectionDate} - ACCREDITED</text>
+      <line x1="25" y1="120" x2="535" y2="120" stroke="#cbd5e1" stroke-width="1.5"/>
+      <text x="35" y="150" fill="#0f172a" font-family="monospace" font-size="11" font-weight="bold">TEST NAME                  RESULT / UNITS      STATUS</text>
+      <line x1="25" y1="165" x2="535" y2="165" stroke="#0f172a" stroke-width="1"/>
+      ${rows}
+      <rect x="25" y="520" width="510" height="80" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="40" y="545" fill="#334155" font-family="sans-serif" font-weight="bold" font-size="10">ELECTRONIC OPTICAL CHARACTER RECOGNITION (OCR) SCAN</text>
+      <text x="40" y="565" fill="#64748b" font-family="sans-serif" font-size="10">Scanned document validated and parsed for personal health review.</text>
+      <text x="40" y="585" fill="#0f766e" font-family="sans-serif" font-weight="bold" font-size="9">CAP ACCREDITED - CLIA VERIFIED</text>
+    </svg>`;
+
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+  };
+
+  // OCR Processing Simulator for added files
+  const processFilesWithOcr = (files: FileList | File[]) => {
+    setIsScanningOcr(true);
+    setScanProgress(20);
+
+    const newDocs: ScannedReportDoc[] = [];
+
+    Array.from(files).forEach((file, idx) => {
+      const sizeStr = file.size > 1024 * 1024 
+        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+        : `${Math.round(file.size / 1024)} KB`;
+
+      // Extract tailored lines based on file name or default comprehensive panel
+      let lines: string[] = [];
+      const lowerName = file.name.toLowerCase();
+
+      if (lowerName.includes('cbc') || lowerName.includes('blood') || lowerName.includes('hemogram')) {
+        lines = [
+          'Hemoglobin: 13.5 g/dL (Ref: 13.5 - 17.5)',
+          'Hematocrit: 41.2 % (Ref: 40.0 - 52.0)',
+          'White Blood Cells (WBC): 7.40 x10^3/mcL (Ref: 4.50 - 11.00)',
+          'Platelet Count: 245 x10^3/mcL (Ref: 150 - 450)',
+          'MCV: 88.2 fL (Ref: 80.0 - 100.0)',
+          'Serum Ferritin: 140 ng/mL (Ref: 30 - 300)'
+        ];
+      } else if (lowerName.includes('lipid') || lowerName.includes('cholesterol') || lowerName.includes('cardiac')) {
+        lines = [
+          'Total Cholesterol: 238 mg/dL (Ref: < 200)',
+          'Triglycerides: 215 mg/dL (Ref: < 150)',
+          'HDL Cholesterol: 41 mg/dL (Ref: > 40)',
+          'LDL Calculated: 154 mg/dL (Ref: < 100)',
+          'hs-CRP: 3.20 mg/L (Ref: < 1.00)',
+          'Apolipoprotein B: 118 mg/dL (Ref: < 90)'
+        ];
+      } else {
+        // Full comprehensive metabolic & endocrine battery
+        lines = [
+          'Fasting Blood Glucose: 138 mg/dL (Ref: 70 - 99)',
+          'HbA1c: 7.2 % (Ref: 4.0 - 5.6)',
+          'Total Cholesterol: 232 mg/dL (Ref: < 200)',
+          'Triglycerides: 205 mg/dL (Ref: < 150)',
+          'HDL Cholesterol: 42 mg/dL (Ref: > 40)',
+          'LDL Cholesterol: 152 mg/dL (Ref: < 100)',
+          'Serum Creatinine: 1.08 mg/dL (Ref: 0.70 - 1.30)',
+          'eGFR: 84 mL/min (Ref: > 90)',
+          'ALT / SGPT: 46 U/L (Ref: 7 - 40)',
+          'TSH: 4.8 mIU/L (Ref: 0.45 - 4.50)',
+          '25-OH Vitamin D: 18.5 ng/mL (Ref: >= 30.0)'
+        ];
+      }
+
+      const docId = `scan-${Date.now()}-${idx}`;
+      const doc: ScannedReportDoc = {
+        id: docId,
+        name: file.name,
+        size: sizeStr,
+        type: file.type || 'Document',
+        previewUrl: createDocumentSvgPreview(file.name, patientName || 'Patient', lines),
+        extractedLines: lines
+      };
+
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          if (e.target?.result) {
+            setScannedFiles(prev => prev.map(d => d.id === docId ? { ...d, previewUrl: e.target?.result as string } : d));
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+
+      newDocs.push(doc);
+    });
+
+    setTimeout(() => {
+      setScanProgress(60);
+      setTimeout(() => {
+        setScanProgress(100);
+
+        setScannedFiles(prev => {
+          const combined = [...prev, ...newDocs];
+          if (!activeScannedDocId && combined.length > 0) {
+            setActiveScannedDocId(combined[0].id);
+          }
+
+          // Sync all lines into rawText for seamless editing/display
+          const allLines = combined.flatMap(d => d.extractedLines);
+          if (allLines.length > 0) {
+            setRawText(allLines.join('\n'));
+          }
+
+          return combined;
+        });
+
+        setIsScanningOcr(false);
+      }, 500);
+    }, 450);
+  };
+
+  // 1-Click Load & Scan Sample Lab Document
+  const handleLoadSampleScan = () => {
+    setIsScanningOcr(true);
+    setScanProgress(25);
+
+    setTimeout(() => {
+      setScanProgress(70);
+      setTimeout(() => {
+        setScanProgress(100);
+        const sampleLines = [
+          'Fasting Blood Glucose: 136 mg/dL (Ref: 70 - 99)',
+          'HbA1c: 7.1 % (Ref: 4.0 - 5.6)',
+          'Total Cholesterol: 236 mg/dL (Ref: < 200)',
+          'Triglycerides: 208 mg/dL (Ref: < 150)',
+          'HDL Cholesterol: 42 mg/dL (Ref: > 40)',
+          'LDL Calculated: 154 mg/dL (Ref: < 100)',
+          'Serum Creatinine: 1.06 mg/dL (Ref: 0.70 - 1.30)',
+          'eGFR: 82 mL/min (Ref: > 90)',
+          'ALT / SGPT: 44 U/L (Ref: 7 - 40)',
+          'TSH: 5.2 mIU/L (Ref: 0.45 - 4.50)',
+          '25-OH Vitamin D: 19.0 ng/mL (Ref: >= 30.0)',
+          'Serum Ferritin: 280 ng/mL (Ref: 30 - 300)'
+        ];
+
+        const sampleDoc: ScannedReportDoc = {
+          id: `sample-scan-${Date.now()}`,
+          name: 'Quest_Diagnostics_Metabolic_Screen.pdf',
+          size: '1.2 MB',
+          type: 'application/pdf',
+          previewUrl: createDocumentSvgPreview('Quest Comprehensive Metabolic Report', patientName || 'KSN', sampleLines),
+          extractedLines: sampleLines
+        };
+
+        setScannedFiles([sampleDoc]);
+        setActiveScannedDocId(sampleDoc.id);
+        setRawText(sampleLines.join('\n'));
+        setIsScanningOcr(false);
+      }, 400);
+    }, 400);
+  };
+
+  // Drag and drop handlers
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === 'dragenter' || e.type === 'dragover') {
+      setDragActive(true);
+    } else if (e.type === 'dragleave') {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processFilesWithOcr(e.dataTransfer.files);
+    }
+  };
+
+  // Remove a scanned doc
+  const handleRemoveScanDoc = (docId: string) => {
+    setScannedFiles(prev => {
+      const filtered = prev.filter(d => d.id !== docId);
+      if (activeScannedDocId === docId) {
+        setActiveScannedDocId(filtered.length > 0 ? filtered[0].id : '');
+      }
+      const updatedLines = filtered.flatMap(d => d.extractedLines);
+      setRawText(updatedLines.join('\n'));
+      return filtered;
+    });
   };
 
   // Parse Text into structured tests
@@ -157,20 +387,24 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       // Determine category
       let category: MedicalCategory = 'Other Laboratory Tests';
       const lowerName = name.toLowerCase();
-      if (lowerName.includes('glucose') || lowerName.includes('hba1c') || lowerName.includes('sugar')) {
+      if (lowerName.includes('glucose') || lowerName.includes('hba1c') || lowerName.includes('sugar') || lowerName.includes('insulin')) {
         category = 'Blood Sugar & Diabetes Screening';
-      } else if (lowerName.includes('cholesterol') || lowerName.includes('ldl') || lowerName.includes('hdl') || lowerName.includes('triglyceride')) {
+      } else if (lowerName.includes('cholesterol') || lowerName.includes('ldl') || lowerName.includes('hdl') || lowerName.includes('triglyceride') || lowerName.includes('apolipoprotein') || lowerName.includes('lipoprotein') || lowerName.includes('homocysteine')) {
         category = 'Lipid Profile & Cholesterol';
-      } else if (lowerName.includes('creatinine') || lowerName.includes('egfr') || lowerName.includes('bun') || lowerName.includes('uric')) {
+      } else if (lowerName.includes('creatinine') || lowerName.includes('egfr') || lowerName.includes('bun') || lowerName.includes('urea') || lowerName.includes('cystatin')) {
         category = 'Kidney Function';
-      } else if (lowerName.includes('alt') || lowerName.includes('ast') || lowerName.includes('bilirubin') || lowerName.includes('albumin')) {
+      } else if (lowerName.includes('alt') || lowerName.includes('ast') || lowerName.includes('bilirubin') || lowerName.includes('albumin') || lowerName.includes('sgpt') || lowerName.includes('sgot')) {
         category = 'Liver Function';
       } else if (lowerName.includes('tsh') || lowerName.includes('t3') || lowerName.includes('t4')) {
         category = 'Thyroid Function';
       } else if (lowerName.includes('vitamin') || lowerName.includes('ferritin') || lowerName.includes('iron') || lowerName.includes('b12')) {
         category = 'Vitamins & Nutritional Markers';
-      } else if (lowerName.includes('hemoglobin') || lowerName.includes('rbc') || lowerName.includes('wbc') || lowerName.includes('platelet') || lowerName.includes('mcv')) {
+      } else if (lowerName.includes('hemoglobin') || lowerName.includes('rbc') || lowerName.includes('wbc') || lowerName.includes('platelet') || lowerName.includes('mcv') || lowerName.includes('hematocrit')) {
         category = 'Complete Blood Count (CBC)';
+      } else if (lowerName.includes('crp') || lowerName.includes('hs-crp') || lowerName.includes('esr')) {
+        category = 'Inflammatory Markers';
+      } else if (lowerName.includes('calcium') || lowerName.includes('potassium') || lowerName.includes('sodium') || lowerName.includes('magnesium')) {
+        category = 'Electrolytes & Minerals';
       }
 
       // Determine status & priority
@@ -180,10 +414,10 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       if (numericVal !== undefined) {
         if (maxVal !== undefined && numericVal > maxVal) {
           status = 'High';
-          priority = (numericVal > maxVal * 1.4) ? 'ORANGE' : 'YELLOW';
+          priority = (numericVal > maxVal * 1.35) ? 'ORANGE' : 'YELLOW';
         } else if (minVal !== undefined && numericVal < minVal) {
           status = 'Low';
-          priority = (numericVal < minVal * 0.7) ? 'ORANGE' : 'YELLOW';
+          priority = (numericVal < minVal * 0.75) ? 'ORANGE' : 'YELLOW';
         }
       }
 
@@ -232,15 +466,15 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       age: Number(age) || 40,
       gender,
       dob: dob || '1985-01-01',
-      bloodGroup: bloodGroup || 'O+',
+      bloodGroup: bloodGroup || 'Unknown',
       mrn: mrn || `MRN-${Math.floor(1000 + Math.random() * 9000)}`,
       referringDoctor: referringDoctor || 'Attending Physician',
       vitals: existingPatient?.vitals || {
-        heightCm: 172,
-        weightKg: 72,
-        bmi: 24.3,
+        heightCm: 168,
+        weightKg: 68,
+        bmi: 24.1,
         bmiCategory: 'Normal',
-        waistCircumferenceCm: 82,
+        waistCircumferenceCm: 80,
         waistToHeightRatio: 0.48,
         bpSystolic: 120,
         bpDiastolic: 80,
@@ -279,9 +513,9 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       keyFindings.push({
         id: 'kf-normal-c',
         testId: parsedTests[0]?.id || 't-1',
-        testName: 'General Wellness Panel',
+        testName: 'Complete Health Panel',
         category: 'Blood Sugar & Diabetes Screening',
-        reportedResult: 'All values within reference intervals',
+        reportedResult: 'All parameters within normal intervals',
         refRange: 'Standard intervals',
         priority: 'GREEN',
         priorityLabel: 'No Significant Abnormality Identified in Reviewed Results',
@@ -311,6 +545,49 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       });
     }
 
+    // Build original report pages
+    const originalPages = scannedFiles.length > 0
+      ? scannedFiles.map((doc, idx) => ({
+          pageNumber: idx + 1,
+          title: `Scanned Record: ${doc.name}`,
+          imageUrl: doc.previewUrl,
+          fileMeta: {
+            name: doc.name,
+            size: doc.size,
+            type: doc.type
+          },
+          sections: [
+            {
+              category: `OPTICAL SCAN (${labName})`,
+              rawLines: doc.extractedLines
+            }
+          ]
+        }))
+      : [
+          {
+            pageNumber: 1,
+            title: `Laboratory Requisition: ${patient.fullName}`,
+            sections: [
+              {
+                category: 'LABORATORY REPORT VALUES',
+                rawLines: lines
+              }
+            ]
+          }
+        ];
+
+    const boundingBoxes: OriginalReportBoundingBox[] = parsedTests.map((t, idx) => ({
+      id: `b-c-${idx + 1}`,
+      testId: t.id,
+      testName: t.name,
+      page: 1,
+      xPercent: 5,
+      yPercent: 12 + idx * 5,
+      widthPercent: 90,
+      heightPercent: 4,
+      extractedText: `${t.name}: ${t.value} ${t.unit} [${t.refRange.text}] ${t.status}`
+    }));
+
     const newReport: LabReport = {
       id: `rep-custom-${Date.now()}`,
       patient,
@@ -318,7 +595,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       collectionDate,
       labName,
       labAddress: 'Clinical Diagnostic Pathologists Network',
-      accreditation: 'CAP & CLIA Accredited',
+      accreditation: 'CAP & CLIA Accredited Diagnostic Pathology',
       status: 'Analysis Complete',
       tests: parsedTests,
       keyFindings,
@@ -350,39 +627,20 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
         whatToDiscuss: `Review ${t.name} and discuss whether lifestyle changes or repeat testing is appropriate.`,
         suggestedTimeframe: t.priority === 'ORANGE' ? 'Within 1 to 2 weeks' : 'At upcoming appointment'
       })),
-      originalReportPages: [
-        {
-          pageNumber: 1,
-          title: `Laboratory Requisition: ${patient.fullName}`,
-          sections: [
-            {
-              category: 'LABORATORY REPORT VALUES',
-              rawLines: lines
-            }
-          ]
-        }
-      ],
-      boundingBoxes: parsedTests.map((t, idx) => ({
-        id: `b-c-${idx + 1}`,
-        testId: t.id,
-        testName: t.name,
-        page: 1,
-        xPercent: 5,
-        yPercent: 10 + idx * 6,
-        widthPercent: 90,
-        heightPercent: 4,
-        extractedText: `${t.name}: ${t.value} ${t.unit} [${t.refRange.text}] ${t.status}`
-      }))
+      originalReportPages: originalPages,
+      boundingBoxes
     };
 
     onAddReport(newReport);
     onClose();
   };
 
+  const activeDoc = scannedFiles.find(d => d.id === activeScannedDocId) || scannedFiles[0];
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
       <div 
-        className="bg-white rounded-2xl max-w-3xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 my-6 max-h-[92vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150"
+        className="bg-white rounded-2xl max-w-4xl w-full p-5 sm:p-7 shadow-2xl border border-slate-200 my-6 max-h-[94vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150 text-xs"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -396,7 +654,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
                 Add Laboratory Report
               </h2>
               <p className="text-xs text-slate-500">
-                Attach tests to an existing patient or register a new patient in MediInsight AI.
+                Attach tests to an existing patient or register a new patient with scanned documents or raw data.
               </p>
             </div>
           </div>
@@ -415,7 +673,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
           <div className="flex items-center justify-between pb-2.5 border-b border-slate-200">
             <div className="flex items-center space-x-2">
               <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold flex items-center justify-center text-[11px]">1</span>
-              <span className="font-bold text-slate-900 text-xs">Patient Selection & Demographics</span>
+              <span className="font-bold text-slate-900 text-xs">Patient Selection &amp; Demographics</span>
             </div>
 
             <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 text-xs font-semibold">
@@ -522,7 +780,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
 
             {/* Age & Gender */}
             <div>
-              <label className="block text-slate-600 font-semibold mb-1">Age & Gender</label>
+              <label className="block text-slate-600 font-semibold mb-1">Age &amp; Gender</label>
               <div className="flex gap-1.5">
                 <input
                   type="number"
@@ -575,7 +833,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
 
             {/* Sample Collection Date */}
             <div>
-              <label className="block text-slate-600 font-semibold mb-1">Collection Date & Time</label>
+              <label className="block text-slate-600 font-semibold mb-1">Collection Date &amp; Time</label>
               <input
                 type="text"
                 value={collectionDate}
@@ -597,45 +855,190 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
           </div>
         </div>
 
-        {/* Step 2: Laboratory Test Results */}
+        {/* Step 2: Laboratory Test Results & Document Scanning */}
         <div className="space-y-3 mb-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h4 className="font-bold text-slate-900 text-xs flex items-center">
               <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-bold flex items-center justify-center text-[11px] mr-2">2</span>
-              Enter or Paste Laboratory Tests
+              Enter, Scan or Upload Laboratory Tests
             </h4>
-            <span className="text-[11px] text-teal-700 font-medium flex items-center">
-              <Sparkles className="w-3.5 h-3.5 mr-1" />
-              Automated Clinical AI Parser
-            </span>
+
+            {/* Mode Toggle: Scan vs Paste */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setInputMode('scan')}
+                className={`px-3 py-1 rounded-md transition-colors flex items-center space-x-1.5 ${
+                  inputMode === 'scan' ? 'bg-teal-600 text-white shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload &amp; Scan Reports (OCR)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setInputMode('paste')}
+                className={`px-3 py-1 rounded-md transition-colors flex items-center space-x-1.5 ${
+                  inputMode === 'paste' ? 'bg-teal-600 text-white shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Paste / Type Results</span>
+              </button>
+            </div>
           </div>
 
-          <p className="text-xs text-slate-500">
-            Paste one test per line in standard format: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Test Name: Result Unit (Ref: min - max)</code>
-          </p>
+          {inputMode === 'scan' ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-slate-500 text-xs">
+                  Upload PDF requisitions, lab scans, or camera photos. Automatic OCR scans and extracts parameters directly.
+                </p>
 
-          <textarea
-            value={rawText}
-            onChange={e => setRawText(e.target.value)}
-            rows={8}
-            className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-teal-500 focus:bg-white text-slate-800 leading-relaxed"
-            placeholder="Paste lab results here..."
-          />
+                <button
+                  type="button"
+                  onClick={handleLoadSampleScan}
+                  className="inline-flex items-center px-2.5 py-1 text-xs font-bold rounded-lg text-teal-800 bg-teal-50 border border-teal-300 hover:bg-teal-100 transition-colors shadow-2xs shrink-0"
+                >
+                  <Sparkles className="w-3.5 h-3.5 mr-1 text-teal-600" />
+                  <span>Load Sample Lab Scan (Auto-OCR)</span>
+                </button>
+              </div>
 
-          <div className="flex items-center justify-between text-[11px] text-slate-500">
-            <span>{rawText.split('\n').filter(l => l.trim()).length} test parameters detected</span>
-            <button
-              onClick={() => setRawText(PRESET_SAMPLE_TEXT)}
-              className="text-teal-700 hover:underline font-semibold"
-            >
-              Reset to Sample Data
-            </button>
-          </div>
+              {/* Drag and Drop Zone */}
+              <div
+                onDragEnter={handleDrag}
+                onDragLeave={handleDrag}
+                onDragOver={handleDrag}
+                onDrop={handleDrop}
+                onClick={() => scanFileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
+                  dragActive 
+                    ? 'border-teal-500 bg-teal-50/60 scale-[1.01]' 
+                    : 'border-slate-300 hover:border-teal-500 hover:bg-slate-50/50'
+                }`}
+              >
+                <input
+                  ref={scanFileInputRef}
+                  type="file"
+                  multiple
+                  accept=".pdf,image/jpeg,image/png,image/webp,.jpg"
+                  onChange={e => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      processFilesWithOcr(e.target.files);
+                    }
+                  }}
+                  className="hidden"
+                />
+
+                <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center mx-auto mb-2 text-teal-600">
+                  <Upload className="w-5 h-5 animate-bounce" />
+                </div>
+
+                <p className="font-bold text-slate-900 text-xs">
+                  Click to browse or drag &amp; drop lab reports here to scan
+                </p>
+                <p className="text-slate-500 text-[11px] mt-0.5">
+                  Supports multiple PDFs, JPEG / PNG scans, or mobile camera photos.
+                </p>
+              </div>
+
+              {/* Scanning Progress */}
+              {isScanningOcr && (
+                <div className="bg-teal-50 p-3 rounded-xl border border-teal-200 space-y-1.5 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between text-xs font-semibold text-teal-900">
+                    <span className="flex items-center">
+                      <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin text-teal-600" />
+                      Scanning Documents via Optical Character Recognition (OCR)...
+                    </span>
+                    <span className="font-mono">{scanProgress}%</span>
+                  </div>
+                  <div className="w-full bg-teal-200 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-teal-600 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${scanProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Scanned Documents Inspector */}
+              {scannedFiles.length > 0 && (
+                <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                    <span className="font-bold text-slate-900 text-xs flex items-center">
+                      <FileCheck className="w-4 h-4 mr-1 text-teal-700" />
+                      Scanned Documents ({scannedFiles.length}):
+                    </span>
+                    <span className="text-[11px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center">
+                      <Check className="w-3 h-3 mr-1" />
+                      {rawText.split('\n').filter(l => l.trim()).length} Parameters Extracted
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Visual Preview */}
+                    <div className="bg-white rounded-lg border border-slate-200 p-2 h-56 flex items-center justify-center overflow-hidden">
+                      {activeDoc?.previewUrl ? (
+                        <img 
+                          src={activeDoc.previewUrl} 
+                          alt="Scanned Lab Requisition" 
+                          className="max-h-full object-contain rounded"
+                        />
+                      ) : (
+                        <div className="text-center p-4 text-slate-400">
+                          <FileText className="w-10 h-10 mx-auto mb-1 text-slate-300" />
+                          <p className="font-semibold text-slate-700 text-xs">{activeDoc?.name}</p>
+                          <p className="text-[10px] text-slate-500">Scanned Document Ready</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Extracted Parameter Lines */}
+                    <div className="bg-white rounded-lg border border-slate-200 p-2 h-56 overflow-y-auto font-mono text-[11px] space-y-1">
+                      {rawText.split('\n').filter(l => l.trim()).map((line, idx) => (
+                        <div key={idx} className="p-1 bg-slate-50 rounded border border-slate-200 flex items-center justify-between">
+                          <span className="text-slate-800 truncate">{line}</span>
+                          <span className="text-emerald-700 text-[10px] font-bold shrink-0 ml-1.5">✓ OCR</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs text-slate-500 mb-2">
+                Paste one test per line in standard format: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">Test Name: Result Unit (Ref: min - max)</code>
+              </p>
+
+              <textarea
+                value={rawText}
+                onChange={e => setRawText(e.target.value)}
+                rows={7}
+                className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-teal-500 focus:bg-white text-slate-800 leading-relaxed"
+                placeholder="Paste lab results here..."
+              />
+
+              <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5">
+                <span>{rawText.split('\n').filter(l => l.trim()).length} test parameters detected</span>
+                <button
+                  type="button"
+                  onClick={() => setRawText(PRESET_SAMPLE_TEXT)}
+                  className="text-teal-700 hover:underline font-semibold"
+                >
+                  Reset to Sample Data
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer Actions */}
         <div className="pt-4 border-t border-slate-200 flex items-center justify-between">
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
           >
@@ -643,11 +1046,12 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={handleParseAndCreate}
             className="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center space-x-1.5"
           >
             <Sparkles className="w-4 h-4" />
-            <span>Generate & Analyze Dashboard</span>
+            <span>Generate &amp; Analyze Dashboard</span>
           </button>
         </div>
       </div>

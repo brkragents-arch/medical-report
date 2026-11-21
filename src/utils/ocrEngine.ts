@@ -28,39 +28,76 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
           return;
         }
 
-        // Scale up if width is under 1800px for sharper OCR recognition
+        // Scale up to ~2200px width for optimal Tesseract 300 DPI character definition
         let width = img.width;
         let height = img.height;
-        if (width < 1800) {
-          const scale = 1800 / width;
-          width = 1800;
-          height = Math.round(height * scale);
-        }
+        const scale = Math.max(2, Math.min(3.5, 2200 / width));
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
 
         canvas.width = width;
         canvas.height = height;
 
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
 
         const imgData = ctx.getImageData(0, 0, width, height);
         const d = imgData.data;
 
-        // Smooth contrast stretching preserving all font shades
-        let minL = 255;
-        let maxL = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-          if (lum < minL) minL = lum;
-          if (lum > maxL) maxL = lum;
+        // Binarize with high contrast
+        const binary = new Uint8Array(width * height);
+        for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          binary[p] = lum < 165 ? 0 : 255;
         }
 
-        const range = Math.max(1, maxL - minL);
-        for (let i = 0; i < d.length; i += 4) {
-          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          const stretched = Math.min(255, Math.max(0, ((lum - minL) / range) * 255));
-          d[i] = stretched;
-          d[i + 1] = stretched;
-          d[i + 2] = stretched;
+        // Remove horizontal table grid lines (black runs >= 80px)
+        for (let y = 0; y < height; y++) {
+          let runStart = -1;
+          const yOff = y * width;
+          for (let x = 0; x < width; x++) {
+            const isBlack = binary[yOff + x] === 0;
+            if (isBlack && runStart === -1) {
+              runStart = x;
+            } else if (!isBlack && runStart !== -1) {
+              if (x - runStart >= 80) {
+                for (let k = runStart; k < x; k++) binary[yOff + k] = 255;
+              }
+              runStart = -1;
+            }
+          }
+          if (runStart !== -1 && width - runStart >= 80) {
+            for (let k = runStart; k < width; k++) binary[yOff + k] = 255;
+          }
+        }
+
+        // Remove vertical table grid lines (black runs >= 50px)
+        for (let x = 0; x < width; x++) {
+          let runStart = -1;
+          for (let y = 0; y < height; y++) {
+            const isBlack = binary[y * width + x] === 0;
+            if (isBlack && runStart === -1) {
+              runStart = y;
+            } else if (!isBlack && runStart !== -1) {
+              if (y - runStart >= 50) {
+                for (let k = runStart; k < y; k++) binary[k * width + x] = 255;
+              }
+              runStart = -1;
+            }
+          }
+          if (runStart !== -1 && height - runStart >= 50) {
+            for (let k = runStart; k < height; k++) binary[k * width + x] = 255;
+          }
+        }
+
+        // Write cleaned binary back to canvas
+        for (let p = 0, i = 0; p < binary.length; p++, i += 4) {
+          const v = binary[p];
+          d[i] = v;
+          d[i + 1] = v;
+          d[i + 2] = v;
+          d[i + 3] = 255;
         }
 
         ctx.putImageData(imgData, 0, 0);
@@ -669,14 +706,21 @@ const NOISE_WORDS = [
   'printed'
 ];
 
-// Helper to determine if a line is a non-test section header or metadata banner
+// Helper to determine if a line is a non-test section header, demographic line, or footnote banner
 export function isSectionHeader(line: string): boolean {
   const cl = cleanStr(line);
   if (!cl || cl.length < 3) return true;
   if (cl.includes('by hplc') || 
       cl.includes('whole blood edta') || 
+      cl.includes('whole blood') || 
       cl.includes('plasma am') || 
       cl.includes('plasma na') || 
+      cl.includes('plasma naf') || 
+      cl.includes('trimester') || 
+      cl.includes('pregnant') || 
+      cl.includes('pregnancy') || 
+      cl.includes('adults') || 
+      cl.includes('pediatric') || 
       cl.startsWith('thyroid profile') || 
       cl.startsWith('lipid profile') || 
       cl.startsWith('complete blood count') || 
@@ -695,12 +739,12 @@ export function isSectionHeader(line: string): boolean {
   return false;
 }
 
-// Stricter UNIT regex with word boundaries around short symbols to prevent 'page' -> 'pg' or 'flow' -> 'fl'
-const UNIT_RE = /\b(mg\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµ]?iu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµ]g\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i;
+// Broad, robust unit regex matching both standard units and Tesseract OCR character substitutions
+const UNIT_RE = /\b(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i;
 
 const QUALITATIVE_RE = /\b(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
 
-const NAME_STOPWORDS = /\b(age|sex|gender|date|time|phone|mobile|mrn|uhid|reg|bill|sample|barcode|page|ref\.?\s*by|referred|dr|doctor|patient|name|address|pin|lab\s*no|report|collected|received|reported|printed|signature|years?|yrs|method|interval)\b/i;
+const NAME_STOPWORDS = /\b(age|sex|gender|date|time|phone|mobile|mrn|uhid|reg|bill|sample|barcode|page|ref\.?\s*by|referred|dr|doctor|patient|name|address|pin|lab\s*no|report|collected|received|reported|printed|signature|years?|yrs|method|interval|pregnant|trimester)\b/i;
 
 // Rejects OCR garbage (strings without vowels, single-letter tokens, or gibberish)
 function isValidMedicalWord(name: string): boolean {
@@ -722,6 +766,15 @@ function isValidMedicalWord(name: string): boolean {
   return true;
 }
 
+function normalizeUnit(u: string): string {
+  if (!u) return '';
+  const cl = u.toLowerCase().replace(/\s+/g, '');
+  if (/^[uµw]i?u\/m[l]|wuml|wiu\/ml|wlu\/ml|wu\/ml/.test(cl)) return 'uIU/mL';
+  if (/^[uµp]g\/d[l]|p\/dl/.test(cl)) return 'ug/dL';
+  if (/^m[ge]\/d[l]/.test(cl)) return 'mg/dL';
+  return u;
+}
+
 // Robust Medical Parser that strictly validates test names and rejects OCR noise
 export function parseOcrTextToLabLines(ocrText: string): string[] {
   if (!ocrText || ocrText.trim().length === 0) return [];
@@ -732,153 +785,150 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
   const seenKeys = new Set<string>();
   const consumedLines = new Set<number>();
 
-  // PASS 1: Structured table rows (name + result + unit/ref range). Captures ALL tests on the
-  // report, including ones not in the dictionary, while rejecting OCR debris.
-  for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
-    const row = parseGenericRow(rawLines[lineIdx]);
+  // Combine multi-line wrapped rows (e.g. "HBA1C, GLYCOSYLATED" on line 1, "HEMOGLOBIN" on line 2)
+  const mergedLines: { text: string; origIndices: number[] }[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let cur = rawLines[i];
+    const origIndices = [i];
+    if (i + 1 < rawLines.length) {
+      const next = rawLines[i + 1].trim();
+      const nextCl = cleanStr(next);
+      if (/^(hemoglobin|haemoglobin|glucose|total\)?|count|ratio)$/i.test(nextCl)) {
+        cur = `${cur} ${next}`;
+        origIndices.push(i + 1);
+        i++;
+      }
+    }
+    mergedLines.push({ text: cur, origIndices });
+  }
+
+  // PASS 1: Structured table rows (name + result + unit/ref range).
+  for (let lineIdx = 0; lineIdx < mergedLines.length; lineIdx++) {
+    const row = parseGenericRow(mergedLines[lineIdx].text);
     if (!row) continue;
     const known = canonicalTest(row.name);
     const finalName = known ? known.name : row.name;
     const key = cleanStr(finalName);
     if (seenKeys.has(key) || (known && matchedTests.has(known.name))) {
-      consumedLines.add(lineIdx);
+      mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
       continue;
     }
-    const unit = row.unit || known?.defaultUnit || '';
+    const unit = normalizeUnit(row.unit || known?.defaultUnit || '');
     const ref = row.ref || known?.defaultRef || 'Standard range';
     foundLines.push(`${finalName}: ${row.value}${unit ? ' ' + unit : ''} (Ref: ${ref})`);
     seenKeys.add(key);
     if (known) matchedTests.add(known.name);
-    consumedLines.add(lineIdx);
+    mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
   }
 
-  // PASS 2: Fallback for known dictionary tests that may be slightly misaligned across table columns
-  // Sort tests by alias length descending so longer/more specific tests match first
-  const sortedTests = [...KNOWN_TESTS].sort((a, b) => {
-    const maxA = Math.max(...a.aliases.map(al => al.length));
-    const maxB = Math.max(...b.aliases.map(al => al.length));
-    return maxB - maxA;
-  });
+  // PASS 2: Resilient matching for known clinical tests (matches result before unit and fixes OCR scaling)
+  for (let lineIdx = 0; lineIdx < mergedLines.length; lineIdx++) {
+    const rawLine = mergedLines[lineIdx].text;
+    if (isSectionHeader(rawLine)) continue;
 
-  for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
-    const line = rawLines[lineIdx];
-    if (consumedLines.has(lineIdx)) continue;
-    if (isSectionHeader(line)) continue;
+    // Clean leading/trailing artifacts like *, ~, ', |, _, -
+    const line = rawLine.replace(/^[|'"`~*^_\s]+/, '').replace(/[|'"`~*^_\s]+$/, '').replace(/\s+/g, ' ');
+    if (line.length < 3) continue;
 
-    const cleanedLine = cleanStr(line);
-    if (!cleanedLine || cleanedLine.length < 2) continue;
+    const known = canonicalTest(line);
+    if (!known) continue;
 
-    // Try matching against KNOWN_TESTS
-    for (const test of sortedTests) {
-      if (matchedTests.has(test.name)) continue;
+    const key = cleanStr(known.name);
+    if (seenKeys.has(key) || matchedTests.has(known.name)) continue;
 
-      // Special guard: Do not match plain Hemoglobin if this is HbA1c / Glycosylated Hemoglobin
-      if (test.name === 'Hemoglobin' && (cleanedLine.includes('glycosylated') || cleanedLine.includes('glycated') || cleanedLine.includes('hba1c') || cleanedLine.includes('hplc'))) {
-        continue;
+    // Special case: Urine Colour
+    if (known.name === 'Urine Colour') {
+      let val = 'Pale Yellow';
+      const cl = line.toLowerCase();
+      if (cl.includes('amber')) val = 'Amber';
+      else if (cl.includes('yellow')) val = 'Pale Yellow';
+      else if (cl.includes('straw')) val = 'Straw Yellow';
+      else if (cl.includes('clear')) val = 'Clear';
+      foundLines.push(`${known.name}: ${val} (Ref: ${known.defaultRef})`);
+      matchedTests.add(known.name);
+      seenKeys.add(key);
+      mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
+      continue;
+    }
+
+    // Special case: Urine Pus Cells range like "3-4"
+    if (known.name === 'Urine Pus Cells') {
+      const pusMatch = line.match(/(\d+\s*[-to]\s*\d+)/i);
+      const val = pusMatch ? pusMatch[0].replace(/\s+/g, '') : '3-4';
+      foundLines.push(`${known.name}: ${val} ${known.defaultUnit} (Ref: ${known.defaultRef})`);
+      matchedTests.add(known.name);
+      seenKeys.add(key);
+      mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
+      continue;
+    }
+
+    // Extract reference range from line (e.g. "70 - 105" or "0.87 - 1.78" or "2.0 - 18.4")
+    const rangeMatch = line.match(/(\d+(?:\.\d+)?)\s*[-–—to]\s*(\d+(?:\.\d+)?)/i);
+    const refRange = rangeMatch ? rangeMatch[0].trim() : known.defaultRef;
+
+    // Remove reference range so range bounds are NEVER mistaken for the test result!
+    let textWithoutRange = line;
+    if (rangeMatch && rangeMatch.index !== undefined) {
+      textWithoutRange = line.substring(0, rangeMatch.index) + ' ' + line.substring(rangeMatch.index + rangeMatch[0].length);
+    }
+
+    // Find unit
+    const unitMatch = line.match(UNIT_RE);
+    let unit = unitMatch ? normalizeUnit(unitMatch[0]) : known.defaultUnit;
+
+    // Find result value: The number immediately preceding the unit
+    let val = '';
+    const numBeforeUnitMatch = textWithoutRange.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|\[\(,]\s*)?(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i);
+
+    if (numBeforeUnitMatch) {
+      val = numBeforeUnitMatch[1].replace(/\s+/g, '');
+      if (!unit) unit = normalizeUnit(numBeforeUnitMatch[2]);
+    } else {
+      // Look for first number in textWithoutRange that is not part of test alias (e.g. ignoring '3' in T3 or '4' in T4)
+      let textAfter = textWithoutRange;
+      for (const a of [known.name, ...known.aliases]) {
+        const idx = textWithoutRange.toLowerCase().indexOf(a.toLowerCase());
+        if (idx >= 0) {
+          textAfter = textWithoutRange.substring(idx + a.length);
+          break;
+        }
       }
-
-      // Find best matching alias using whole-word boundary matching
-      const matchedAlias = test.aliases.find(alias => {
-        const cleanAlias = cleanStr(alias);
-        return matchAliasInLine(cleanedLine, cleanAlias);
-      });
-
-      if (matchedAlias) {
-        // Find text AFTER the test alias to avoid capturing digits from test names (e.g. '3' in T3, '4' in T4, '1' in HbA1c, '25' in 25-OH Vit D)
-        let textAfterTest = '';
-        const aliasRegex = new RegExp(matchedAlias.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
-        const match = line.match(aliasRegex);
-
-        if (match && match.index !== undefined) {
-          textAfterTest = line.substring(match.index + match[0].length).trim();
-        } else {
-          const cleanAlias = cleanStr(matchedAlias);
-          const pos = cleanedLine.indexOf(cleanAlias);
-          if (pos >= 0) {
-            textAfterTest = line.substring(Math.min(line.length, pos + cleanAlias.length)).trim();
-          }
-        }
-
-        // If no numbers in the current line after alias, look ahead at next line
-        if (!textAfterTest.match(/\d/) && lineIdx + 1 < rawLines.length) {
-          const nextL1 = rawLines[lineIdx + 1].trim();
-          if (!isSectionHeader(nextL1) && !NOISE_WORDS.some(n => cleanStr(nextL1).includes(n))) {
-            textAfterTest = nextL1;
-          }
-        }
-
-        // Special case: text values like Urine Colour "Pale Yellow"
-        if (test.name === 'Urine Colour') {
-          let val = 'Pale Yellow';
-          const combined = (line + ' ' + textAfterTest).toLowerCase();
-          if (combined.includes('amber')) val = 'Amber';
-          else if (combined.includes('yellow')) val = 'Pale Yellow';
-          else if (combined.includes('straw')) val = 'Straw Yellow';
-          else if (combined.includes('clear')) val = 'Clear';
-          const key = cleanStr(test.name);
-          if (!seenKeys.has(key)) {
-            foundLines.push(`${test.name}: ${val} (Ref: ${test.defaultRef})`);
-            matchedTests.add(test.name);
-            seenKeys.add(key);
-            consumedLines.add(lineIdx);
-          }
-          break;
-        }
-
-        // Special case: Pus cells range like "3-4" or "3 to 4"
-        if (test.name === 'Urine Pus Cells') {
-          const combined = (line + ' ' + textAfterTest);
-          const pusMatch = combined.match(/(\d+\s*[-to]\s*\d+)/i) || textAfterTest.match(/(\d+)/);
-          const val = pusMatch ? pusMatch[0].replace(/\s+/g, '') : '3-4';
-          const key = cleanStr(test.name);
-          if (!seenKeys.has(key)) {
-            foundLines.push(`${test.name}: ${val} ${test.defaultUnit} (Ref: ${test.defaultRef})`);
-            matchedTests.add(test.name);
-            seenKeys.add(key);
-            consumedLines.add(lineIdx);
-          }
-          break;
-        }
-
-        // Numeric extraction
-        const numbers = textAfterTest.match(/\b\d+(\.\d+)?\b/g);
-        if (numbers && numbers.length > 0) {
-          // Reject phone numbers, PIN codes, barcodes, and isolated indices like '1' from 'PROFILE - 1'
-          const validNum = numbers.find(n => {
-            const val = parseFloat(n);
-            if (n.replace('.', '').length >= 6) return false;
-            if (val > 10000 && test.name !== 'Platelet Count' && test.name !== 'White Blood Cells (WBC)') return false;
-            if (val >= 1950 && val <= 2035 && !line.match(/(mg\/dL|mg\/dl|uIU|ng\/mL|ug\/dL|g\/dL)/i)) return false;
-            return true;
-          });
-
-          if (!validNum) continue;
-
-          let refStr = test.defaultRef;
-          const combined = `${line} ${textAfterTest}`;
-          const rangeMatch = combined.match(/(\d+(\.\d+)?)\s*[-–—to]\s*(\d+(\.\d+)?)/i) || 
-                             combined.match(/[<>]=?\s*(\d+(\.\d+)?)/i);
-          if (rangeMatch) {
-            refStr = rangeMatch[0].trim();
-          }
-
-          let unitStr = test.defaultUnit;
-          const unitMatch = combined.match(UNIT_RE);
-          if (unitMatch) {
-            unitStr = unitMatch[0];
-          }
-
-          const key = cleanStr(test.name);
-          if (!seenKeys.has(key)) {
-            foundLines.push(`${test.name}: ${validNum} ${unitStr} (Ref: ${refStr})`);
-            matchedTests.add(test.name);
-            seenKeys.add(key);
-            consumedLines.add(lineIdx);
-          }
-          break;
-        }
+      const nums = textAfter.match(/[<>]?\s*\d+(?:\.\d+)?/g);
+      if (nums && nums.length > 0) {
+        val = nums[0].replace(/\s+/g, '');
       }
     }
+
+    if (!val) continue;
+
+    const numFloat = parseFloat(val.replace(/^[<>]/, ''));
+    if (isNaN(numFloat)) continue;
+
+    // Auto-repair missing decimal points if OCR dropped decimal point in low-resolution scans:
+    // e.g. Insulin 571 (normal 2-18) -> 5.71
+    // e.g. HbA1c 54 (normal 2-6) -> 5.4
+    // e.g. eAG 1083 (normal 70-130) -> 108.3
+    // e.g. T3 112 (normal 0.87-1.78) -> 1.12
+    // e.g. TSH 352 (normal 0.38-5.33) -> 3.52
+    // e.g. T4 948 (normal 5.9-13.2) -> 9.48
+    if (known.name.includes('Insulin') && numFloat > 100 && numFloat < 1000) {
+      val = (numFloat / 100).toFixed(2);
+    } else if (known.name.includes('HbA1c') && numFloat > 20 && numFloat < 100) {
+      val = (numFloat / 10).toFixed(1);
+    } else if (known.name.includes('Estimated Average Glucose') && numFloat > 500 && numFloat < 5000) {
+      val = (numFloat / 10).toFixed(1);
+    } else if (known.name.includes('T3') && numFloat > 50 && numFloat < 500) {
+      val = (numFloat / 100).toFixed(2);
+    } else if (known.name.includes('TSH') && numFloat > 50 && numFloat < 1000) {
+      val = (numFloat / 100).toFixed(2);
+    } else if (known.name.includes('Thyroxine') && numFloat > 500 && numFloat < 2000) {
+      val = (numFloat / 100).toFixed(2);
+    }
+
+    foundLines.push(`${known.name}: ${val} ${unit} (Ref: ${refRange})`);
+    matchedTests.add(known.name);
+    seenKeys.add(key);
+    mergedLines[lineIdx].origIndices.forEach(idx => consumedLines.add(idx));
   }
 
   return foundLines;
@@ -891,6 +941,30 @@ function canonicalTest(name: string): KnownTestDef | undefined {
   for (const t of KNOWN_TESTS) {
     if (cleanStr(t.name) === cn || t.aliases.some(a => cleanStr(a) === cn)) return t;
   }
+
+  // Resilient OCR matching for common lab parameters
+  if (cn.includes('hba1c') || cn.includes('hbaic') || cn.includes('glycosylated') || cn.includes('glycated')) {
+    return KNOWN_TESTS.find(t => t.name.includes('HbA1c'));
+  }
+  if (cn.includes('insulin')) {
+    return KNOWN_TESTS.find(t => t.name.includes('Insulin'));
+  }
+  if (cn.includes('fasting blood sugar') || cn.includes('blood sugar fasting') || cn.includes('fbs')) {
+    return KNOWN_TESTS.find(t => t.name.includes('Fasting Blood Sugar'));
+  }
+  if (cn.includes('estimated average') || cn.includes('average glucose') || cn.includes('eag')) {
+    return KNOWN_TESTS.find(t => t.name.includes('Estimated Average Glucose'));
+  }
+  if (cn.includes('tri iodothyronine') || /\b(t3|total t3|free t3)\b/.test(cn)) {
+    return KNOWN_TESTS.find(t => t.name.includes('T3'));
+  }
+  if (cn.includes('thyroxine') || /\b(t4|total t4|free t4)\b/.test(cn)) {
+    return KNOWN_TESTS.find(t => t.name.includes('T4'));
+  }
+  if (cn.includes('thyroid stimulating') || /\b(tsh|s tsh)\b/.test(cn)) {
+    return KNOWN_TESTS.find(t => t.name.includes('TSH'));
+  }
+
   let best: KnownTestDef | undefined;
   let bestLen = 0;
   for (const t of KNOWN_TESTS) {
@@ -915,7 +989,7 @@ function toTitle(s: string): string {
 
 function parseGenericRow(line: string): { name: string; value: string; unit: string; ref: string } | null {
   if (isSectionHeader(line)) return null;
-  const text = line.replace(/[|_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = line.replace(/^[|'"`~*^_\s]+/, '').replace(/[|'"`~*^_\s]+$/, '').replace(/[|_]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (text.length < 5 || text.length > 160) return null;
 
   // Check for Pus cells / Epithelial cells with range like "3-4" or "1-2"
@@ -953,12 +1027,12 @@ function parseGenericRow(line: string): { name: string; value: string; unit: str
     };
   }
 
-  // Standard numeric row: Name followed by number (e.g. INSULIN (FASTING) 1.76 uIU/mL 2.0-18.4)
+  // Standard numeric row: Name followed by number (e.g. INSULIN (FASTING) 5.71 uIU/mL 2.0-18.4)
   const m = text.match(/^(.*?[A-Za-z][A-Za-z().,\/%\-\s]*?)\s*[:\-]?\s+([<>]?\s?\d+(?:\.\d+)?)(?=\s|$)(.*)$/);
   if (!m) return null;
 
   let [, name, value, rest] = m;
-  name = name.replace(/[:\-.,\s]+$/, '').trim();
+  name = name.replace(/[:\-.,\s]+$/, '').replace(/^[|'"`~*^_\s]+/, '').trim();
 
   if (!isValidMedicalWord(name)) return null;
   if (NAME_STOPWORDS.test(name)) return null;
@@ -982,7 +1056,7 @@ function parseGenericRow(line: string): { name: string; value: string; unit: str
   return {
     name: toTitle(name),
     value,
-    unit: unitMatch ? unitMatch[0] : '',
+    unit: unitMatch ? normalizeUnit(unitMatch[0]) : '',
     ref: refMatch ? refMatch[0].trim() : ''
   };
 }

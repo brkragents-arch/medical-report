@@ -86,7 +86,7 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
 }
 
 // Extract digital text or render page to canvas for scanned PDFs
-export async function extractPdfTextOrCanvas(file: File): Promise<{ text: string; canvasUrl?: string }> {
+export async function extractPdfTextOrCanvas(file: File): Promise<{ text: string; canvasUrl?: string; canvasUrls?: string[] }> {
   try {
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
@@ -96,7 +96,18 @@ export async function extractPdfTextOrCanvas(file: File): Promise<{ text: string
     for (let p = 1; p <= Math.min(pdf.numPages, 5); p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      const pageText = content.items.map((it: any) => it.str || '').join(' ');
+      // Rebuild table rows by grouping text items with the same Y coordinate
+      const rows = new Map<number, { x: number; s: string }[]>();
+      for (const it of content.items as any[]) {
+        if (!it.str || !it.str.trim()) continue;
+        const y = Math.round(it.transform[5] / 3) * 3;
+        if (!rows.has(y)) rows.set(y, []);
+        rows.get(y)!.push({ x: it.transform[4], s: it.str });
+      }
+      const pageText = [...rows.entries()]
+        .sort((a, b) => b[0] - a[0])
+        .map(([, items]) => items.sort((a, b) => a.x - b.x).map(i => i.s).join('  '))
+        .join('\n');
       text += pageText + '\n';
     }
 
@@ -104,17 +115,21 @@ export async function extractPdfTextOrCanvas(file: File): Promise<{ text: string
       return { text };
     }
 
-    // Scanned image PDF: render page 1 to canvas for Tesseract OCR
-    const firstPage = await pdf.getPage(1);
-    const viewport = firstPage.getViewport({ scale: 2.0 });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      await (firstPage.render as any)({ canvasContext: ctx, viewport, canvas }).promise;
-      return { text: '', canvasUrl: canvas.toDataURL('image/png') };
+    // Scanned image PDF: render up to 5 pages to canvases for Tesseract OCR
+    const canvasUrls: string[] = [];
+    for (let p = 1; p <= Math.min(pdf.numPages, 5); p++) {
+      const pg = await pdf.getPage(p);
+      const viewport = pg.getViewport({ scale: 2.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        await (pg.render as any)({ canvasContext: ctx, viewport, canvas }).promise;
+        canvasUrls.push(canvas.toDataURL('image/png'));
+      }
     }
+    if (canvasUrls.length > 0) return { text: '', canvasUrl: canvasUrls[0], canvasUrls };
   } catch (err) {
     console.warn('PDF parsing fallback:', err);
   }
@@ -128,6 +143,7 @@ export async function runRealOcr(
 ): Promise<ExtractedOcrResult> {
   try {
     let targetSource: string = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
+    let sources: string[] = [targetSource];
 
     // If PDF file, attempt digital text extraction first
     if (typeof fileOrUrl !== 'string' && (fileOrUrl.type.includes('pdf') || fileOrUrl.name.toLowerCase().endsWith('.pdf'))) {
@@ -144,31 +160,41 @@ export async function runRealOcr(
           };
         }
       }
-      if (pdfRes.canvasUrl) {
-        targetSource = pdfRes.canvasUrl;
+      if (pdfRes.canvasUrls && pdfRes.canvasUrls.length > 0) {
+        sources = pdfRes.canvasUrls;
+      } else if (pdfRes.canvasUrl) {
+        sources = [pdfRes.canvasUrl];
       }
     } else if (typeof fileOrUrl !== 'string' && fileOrUrl.type.startsWith('image/')) {
       if (onProgress) onProgress(15, 'Preparing scan image for optical character recognition...');
-      targetSource = await preprocessImage(fileOrUrl);
+      sources = [await preprocessImage(fileOrUrl)];
     }
 
     if (onProgress) onProgress(30, 'Scanning text and laboratory tables...');
 
-    const result = await Tesseract.recognize(
-      targetSource,
-      'eng',
-      {
-        logger: m => {
-          if (m.status === 'recognizing text' && onProgress) {
-            const p = Math.round(30 + (m.progress * 60));
-            onProgress(Math.min(95, p), `Extracting laboratory characters (${Math.round(m.progress * 100)}%)...`);
-          }
+    // PSM 6 (single uniform block) keeps each table row on one line, which is what lab reports need
+    const worker = await Tesseract.createWorker('eng', 1, {
+      logger: (m: any) => {
+        if (m.status === 'recognizing text' && onProgress) {
+          const p = Math.round(30 + (m.progress * 60));
+          onProgress(Math.min(95, p), `Extracting laboratory characters (${Math.round(m.progress * 100)}%)...`);
         }
       }
-    );
+    });
+    await worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: '1'
+    } as any);
 
-    const rawText = result.data.text || '';
-    const confidence = result.data.confidence || 0;
+    let rawText = '';
+    let confSum = 0;
+    for (const src of sources) {
+      const r = await worker.recognize(src);
+      rawText += (r.data.text || '') + '\n';
+      confSum += r.data.confidence || 0;
+    }
+    await worker.terminate();
+    const confidence = sources.length ? confSum / sources.length : 0;
 
     // Parse text into structured lines using clean medical validation
     const extractedLines = parseOcrTextToLabLines(rawText);
@@ -308,7 +334,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'White Blood Cells (WBC)', 
-    aliases: ['white blood cells', 'wbc', 'wbc count', 'total leukocyte count'], 
+    aliases: ['white blood cells', 'wbc', 'wbc count', 'total leukocyte count', 'total leucocyte count', 'tlc', 'total wbc count'], 
     defaultUnit: 'x10^3/mcL', 
     defaultRef: '4.00 - 11.00' 
   },
@@ -647,6 +673,28 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
   const rawLines = ocrText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 1);
   const foundLines: string[] = [];
   const matchedTests = new Set<string>();
+  const consumedLines = new Set<number>();
+
+  // PASS 1: Structured table rows (name + result + unit/ref range). Captures ALL tests on the
+  // report, including ones not in the dictionary, while rejecting OCR debris.
+  const seenNames = new Set<string>();
+  for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
+    const row = parseGenericRow(rawLines[lineIdx]);
+    if (!row) continue;
+    const known = canonicalTest(row.name);
+    const finalName = known ? known.name : toTitle(row.name);
+    const key = cleanStr(finalName);
+    if (seenNames.has(key) || (known && matchedTests.has(known.name))) {
+      consumedLines.add(lineIdx);
+      continue;
+    }
+    const unit = row.unit || known?.defaultUnit || '';
+    const ref = row.ref || known?.defaultRef || 'Standard range';
+    foundLines.push(`${finalName}: ${row.value}${unit ? ' ' + unit : ''} (Ref: ${ref})`);
+    seenNames.add(key);
+    if (known) matchedTests.add(known.name);
+    consumedLines.add(lineIdx);
+  }
 
   // Sort tests by alias length descending so longer/more specific tests match first
   const sortedTests = [...KNOWN_TESTS].sort((a, b) => {
@@ -657,6 +705,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
 
   for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
     const line = rawLines[lineIdx];
+    if (consumedLines.has(lineIdx)) continue;
     const cleanedLine = cleanStr(line);
 
     // Skip empty lines, pure numbers, or table headers
@@ -727,6 +776,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
           else if (combined.includes('clear')) val = 'Clear';
           foundLines.push(`${test.name}: ${val} (Ref: ${test.defaultRef})`);
           matchedTests.add(test.name);
+          consumedLines.add(lineIdx);
           break;
         }
 
@@ -737,6 +787,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
           const val = pusMatch ? pusMatch[0].replace(/\s+/g, '') : '3-4';
           foundLines.push(`${test.name}: ${val} ${test.defaultUnit} (Ref: ${test.defaultRef})`);
           matchedTests.add(test.name);
+          consumedLines.add(lineIdx);
           break;
         }
 
@@ -778,6 +829,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
 
           foundLines.push(`${test.name}: ${resultVal} ${unitStr} (Ref: ${refStr})`);
           matchedTests.add(test.name);
+          consumedLines.add(lineIdx);
           break;
         }
       }
@@ -785,4 +837,85 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
   }
 
   return foundLines;
+}
+
+// Map a parsed row NAME to a dictionary test only on exact / prefix match (never substring),
+// so "Mean Platelet Volume" is not mistaken for "Platelet Count".
+function canonicalTest(name: string): KnownTestDef | undefined {
+  const cn = cleanStr(name);
+  for (const t of KNOWN_TESTS) {
+    if (cleanStr(t.name) === cn || t.aliases.some(a => cleanStr(a) === cn)) return t;
+  }
+  let best: KnownTestDef | undefined;
+  let bestLen = 0;
+  for (const t of KNOWN_TESTS) {
+    for (const a of t.aliases) {
+      const ca = cleanStr(a);
+      if (ca.length >= 3 && cn.startsWith(ca + ' ') && ca.length > bestLen) {
+        // "Hemoglobin A1c" must not map to plain Hemoglobin
+        if (t.name === 'Hemoglobin' && /a1c|glycated|glycosylated/.test(cn)) continue;
+        best = t;
+        bestLen = ca.length;
+      }
+    }
+  }
+  return best;
+}
+
+function toTitle(s: string): string {
+  if (s !== s.toUpperCase()) return s;
+  return s.toLowerCase().replace(/(^|[\s(\/-])([a-z])/g, (_, p, c) => p + c.toUpperCase())
+    .replace(/\b(Hba1c|Tsh|T3|T4|Tibc|Ldl|Hdl|Vldl|Mcv|Mch|Mchc|Rdw|Esr|Crp|Sgot|Sgpt|Alp|Ggt|Bun|Psa|Cea|Ldh)\b/gi, m => m.toUpperCase());
+}
+
+const UNIT_RE = /(mg\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµ]?iu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµ]g\/dl|[uµ]g\/l|fl|pg|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)/i;
+const QUALITATIVE_RE = /^(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
+const NAME_STOPWORDS = /\b(age|sex|gender|date|time|phone|mobile|mrn|uhid|reg|bill|sample|barcode|page|ref\.?\s*by|referred|dr|doctor|patient|name|address|pin|lab\s*no|report|collected|received|reported|printed|signature|years?|yrs)\b/i;
+
+function parseGenericRow(line: string): { name: string; value: string; unit: string; ref: string } | null {
+  const text = line.replace(/[|_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text.length < 5 || text.length > 160) return null;
+
+  // Locate first result token: number, range like 3-4, or qualitative word, preceded by a name
+  const m = text.match(/^(.*?[A-Za-z][A-Za-z().,\/%\-\s]*?)\s*[:\-]?\s+([<>]?\s?\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?)(?=\s|$)(.*)$/);
+  let name: string, value: string, rest: string;
+  if (m) {
+    [, name, value, rest] = m;
+  } else {
+    const q = text.match(/^(.*?[A-Za-z]{3,}[A-Za-z().,\/\-\s]*?)\s*[:\-]?\s+(.+)$/);
+    if (!q || !QUALITATIVE_RE.test(q[2])) return null;
+    name = q[1];
+    value = q[2].match(QUALITATIVE_RE)![0];
+    rest = q[2].slice(value.length);
+  }
+
+  name = name.replace(/[:\-.,\s]+$/, '').trim();
+  const letters = (name.match(/[A-Za-z]/g) || []).length;
+  // Name must look like real words, not OCR debris such as "i I NY GO"
+  if (letters < 3 || letters / name.replace(/\s/g, '').length < 0.6) return null;
+  if (!/[A-Za-z]{3,}/.test(name)) return null;
+  const words = name.split(/\s+/);
+  const shortJunk = words.filter(w => w.length <= 2 && !/^(t3|t4|hb|ph|a1c|b12|of|in|c)$/i.test(w)).length;
+  if (shortJunk > words.length / 2) return null;
+  if (NAME_STOPWORDS.test(name)) return null;
+  if (NOISE_WORDS.some(n => cleanStr(name) === n)) return null;
+
+  const isQual = QUALITATIVE_RE.test(value);
+  value = isQual ? value.replace(/\s+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : value.replace(/\s+/g, '');
+  const numeric = parseFloat(value.replace(/^[<>]/, ''));
+  if (!isNaN(numeric) && (value.replace(/\D/g, '').length >= 7)) return null; // phone/barcode
+
+  const unitMatch = rest.match(UNIT_RE);
+  const refMatch = rest.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/) || rest.match(/[<>]=?\s*\d+(?:\.\d+)?/);
+  const isQualitative = isNaN(numeric) || QUALITATIVE_RE.test(value);
+
+  // Require evidence that this is a lab row
+  if (!isQualitative && !unitMatch && !refMatch) return null;
+
+  return {
+    name: name.replace(/\b([a-z])/g, c => c.toUpperCase()),
+    value,
+    unit: unitMatch ? unitMatch[0] : '',
+    ref: refMatch ? refMatch[0].trim() : ''
+  };
 }

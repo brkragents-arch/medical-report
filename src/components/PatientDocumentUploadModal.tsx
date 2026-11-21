@@ -450,10 +450,10 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
         }
       }
 
-      // If already has extracted lines or fallback to tailored clinical battery
+      // Real OCR result - do NOT inject fake/dummy tests!
       const battery = CLINICAL_BATTERIES[docIdx % CLINICAL_BATTERIES.length];
-      if (lines.length === 0) {
-        lines = item.extractedLines.length > 0 ? item.extractedLines : [...battery.lines];
+      if (lines.length === 0 && item.extractedLines && item.extractedLines.length > 0) {
+        lines = item.extractedLines;
       }
 
       const parsed = lines
@@ -517,7 +517,7 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
         collectionDate: `${formattedDate} (08:${idx * 15} AM)`,
         labName: battery.labName,
         category: battery.category,
-        extractedLines: [...battery.lines],
+        extractedLines: [],
         parsedTests: [],
         scanStatus: 'idle'
       };
@@ -1495,7 +1495,15 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
 
                       {/* List of Extracted Lines */}
                       <div className="space-y-1.5 font-mono text-[11px]">
-                        {activeStagedFile.extractedLines.map((line, lIdx) => {
+                        {activeStagedFile.extractedLines.length === 0 ? (
+                          <div className="text-center py-8 px-4 text-slate-400 font-sans">
+                            <p className="font-semibold text-slate-600 text-xs">No parameters detected from this scan</p>
+                            <p className="text-[10px] text-slate-500 mt-1">
+                              Click <span className="font-bold text-teal-700">+ Add Test</span> above to add laboratory values manually.
+                            </p>
+                          </div>
+                        ) : (
+                          activeStagedFile.extractedLines.map((line, lIdx) => {
                           const isEditing = editingLineIdx === lIdx;
 
                           return (
@@ -1551,7 +1559,7 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
                               )}
                             </div>
                           );
-                        })}
+                        }))}
                       </div>
                     </div>
                   </div>

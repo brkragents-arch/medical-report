@@ -1,4 +1,12 @@
 import Tesseract from 'tesseract.js';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Configure pdfjs worker if in browser
+if (typeof window !== 'undefined') {
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+  } catch (e) {}
+}
 
 export interface ExtractedOcrResult {
   rawText: string;
@@ -6,7 +14,7 @@ export interface ExtractedOcrResult {
   confidence: number;
 }
 
-// Pre-process image on canvas to boost OCR contrast and accuracy
+// Pre-process image on canvas to boost OCR contrast and character definition without destroying faint/colored text
 export async function preprocessImage(imageSource: string | File): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -20,12 +28,12 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
           return;
         }
 
-        // Scale up if width is under 1600px for sharper character recognition
+        // Scale up if width is under 1800px for sharper OCR recognition
         let width = img.width;
         let height = img.height;
-        if (width < 1600) {
-          const scale = 1600 / width;
-          width = 1600;
+        if (width < 1800) {
+          const scale = 1800 / width;
+          width = 1800;
           height = Math.round(height * scale);
         }
 
@@ -37,15 +45,22 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
         const imgData = ctx.getImageData(0, 0, width, height);
         const d = imgData.data;
 
-        // Adaptive binarization & high contrast threshold
+        // Smooth contrast stretching preserving all font shades
+        let minL = 255;
+        let maxL = 0;
         for (let i = 0; i < d.length; i += 4) {
-          // Standard luminance
-          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          // High contrast curve
-          const val = gray > 140 ? 255 : (gray < 80 ? 0 : gray);
-          d[i] = val;
-          d[i + 1] = val;
-          d[i + 2] = val;
+          const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+          if (lum < minL) minL = lum;
+          if (lum > maxL) maxL = lum;
+        }
+
+        const range = Math.max(1, maxL - minL);
+        for (let i = 0; i < d.length; i += 4) {
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          const stretched = Math.min(255, Math.max(0, ((lum - minL) / range) * 255));
+          d[i] = stretched;
+          d[i + 1] = stretched;
+          d[i + 2] = stretched;
         }
 
         ctx.putImageData(imgData, 0, 0);
@@ -70,16 +85,70 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
   });
 }
 
-// Real Tesseract OCR recognition
+// Extract digital text or render page to canvas for scanned PDFs
+export async function extractPdfTextOrCanvas(file: File): Promise<{ text: string; canvasUrl?: string }> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    let text = '';
+
+    for (let p = 1; p <= Math.min(pdf.numPages, 5); p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const pageText = content.items.map((it: any) => it.str || '').join(' ');
+      text += pageText + '\n';
+    }
+
+    if (text.trim().length > 40) {
+      return { text };
+    }
+
+    // Scanned image PDF: render page 1 to canvas for Tesseract OCR
+    const firstPage = await pdf.getPage(1);
+    const viewport = firstPage.getViewport({ scale: 2.0 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      await (firstPage.render as any)({ canvasContext: ctx, viewport, canvas }).promise;
+      return { text: '', canvasUrl: canvas.toDataURL('image/png') };
+    }
+  } catch (err) {
+    console.warn('PDF parsing fallback:', err);
+  }
+  return { text: '' };
+}
+
+// Real Tesseract OCR recognition supporting both image and PDF files
 export async function runRealOcr(
   fileOrUrl: File | string,
   onProgress?: (percent: number, status: string) => void
 ): Promise<ExtractedOcrResult> {
   try {
-    if (onProgress) onProgress(15, 'Preparing scan image for optical character recognition...');
-
     let targetSource: string = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
-    if (typeof fileOrUrl !== 'string' && fileOrUrl.type.startsWith('image/')) {
+
+    // If PDF file, attempt digital text extraction first
+    if (typeof fileOrUrl !== 'string' && (fileOrUrl.type.includes('pdf') || fileOrUrl.name.toLowerCase().endsWith('.pdf'))) {
+      if (onProgress) onProgress(20, 'Reading PDF digital structure & text layers...');
+      const pdfRes = await extractPdfTextOrCanvas(fileOrUrl);
+      if (pdfRes.text && pdfRes.text.trim().length > 30) {
+        const extractedLines = parseOcrTextToLabLines(pdfRes.text);
+        if (extractedLines.length > 0) {
+          if (onProgress) onProgress(100, `Extracted ${extractedLines.length} validated parameters from digital PDF.`);
+          return {
+            rawText: pdfRes.text,
+            extractedLines,
+            confidence: 98
+          };
+        }
+      }
+      if (pdfRes.canvasUrl) {
+        targetSource = pdfRes.canvasUrl;
+      }
+    } else if (typeof fileOrUrl !== 'string' && fileOrUrl.type.startsWith('image/')) {
+      if (onProgress) onProgress(15, 'Preparing scan image for optical character recognition...');
       targetSource = await preprocessImage(fileOrUrl);
     }
 
@@ -191,7 +260,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   // Complete Blood Count (CBC) with Differential
   { 
     name: 'Neutrophils', 
-    aliases: ['neutrophils', 'absolute neutrophils', 'neutrophil %', 'polymorphs', 'segs'], 
+    aliases: ['neutrophils', 'absolute neutrophils', 'neutrophil %', 'polymorphs'], 
     defaultUnit: '%', 
     defaultRef: '40 - 70' 
   },
@@ -221,13 +290,13 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Hemoglobin', 
-    aliases: ['hemoglobin', 'haemoglobin', 'hb', 'hgb', 's.hemoglobin'], 
+    aliases: ['hemoglobin', 'haemoglobin', 'hgb', 'total hemoglobin', 's.hemoglobin'], 
     defaultUnit: 'g/dL', 
     defaultRef: '12.0 - 16.5' 
   },
   { 
     name: 'Hematocrit', 
-    aliases: ['hematocrit', 'haematocrit', 'hct', 'pcv'], 
+    aliases: ['hematocrit', 'haematocrit', 'hct'], 
     defaultUnit: '%', 
     defaultRef: '36.0 - 48.0' 
   },
@@ -239,13 +308,13 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'White Blood Cells (WBC)', 
-    aliases: ['white blood cells', 'wbc', 'wbc count', 'total leukocyte count', 'tlc'], 
+    aliases: ['white blood cells', 'wbc', 'wbc count', 'total leukocyte count'], 
     defaultUnit: 'x10^3/mcL', 
     defaultRef: '4.00 - 11.00' 
   },
   { 
     name: 'Platelet Count', 
-    aliases: ['platelet count', 'platelets', 'plt', 'total platelets'], 
+    aliases: ['platelet count', 'platelets', 'total platelets', 'platelet'], 
     defaultUnit: 'x10^3/mcL', 
     defaultRef: '150 - 450' 
   },
@@ -289,7 +358,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Urine Colour', 
-    aliases: ['colour', 'color', 'urine colour', 'urine color'], 
+    aliases: ['urine colour', 'urine color'], 
     defaultUnit: '', 
     defaultRef: 'Pale Yellow / Amber' 
   },
@@ -327,7 +396,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Triglycerides', 
-    aliases: ['triglycerides', 'serum triglycerides', 'tgl', 'tg'], 
+    aliases: ['triglycerides', 'serum triglycerides', 'tgl'], 
     defaultUnit: 'mg/dL', 
     defaultRef: '< 150' 
   },
@@ -363,7 +432,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Lipoprotein(a)', 
-    aliases: ['lipoprotein(a)', 'lipoprotein a', 'lp(a)', 'lpa'], 
+    aliases: ['lipoprotein(a)', 'lipoprotein a', 'lp(a)'], 
     defaultUnit: 'mg/dL', 
     defaultRef: '< 30' 
   },
@@ -395,7 +464,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Blood Urea Nitrogen (BUN)', 
-    aliases: ['blood urea nitrogen', 'bun', 'urea nitrogen', 'urea'], 
+    aliases: ['blood urea nitrogen', 'bun', 'urea nitrogen', 'blood urea'], 
     defaultUnit: 'mg/dL', 
     defaultRef: '7 - 20' 
   },
@@ -407,7 +476,7 @@ export const KNOWN_TESTS: KnownTestDef[] = [
   },
   { 
     name: 'Serum Uric Acid', 
-    aliases: ['serum uric acid', 'uric acid', 'urate'], 
+    aliases: ['serum uric acid', 'uric acid'], 
     defaultUnit: 'mg/dL', 
     defaultRef: '3.5 - 7.2' 
   },
@@ -508,7 +577,7 @@ function matchAliasInLine(cleanedLine: string, cleanAlias: string): boolean {
   return regex.test(cleanedLine);
 }
 
-// Ignore header tokens and metadata that aren't individual tests
+// Ignore header tokens, demographic markers, and billing metadata that aren't tests
 const NOISE_WORDS = [
   'biological reference interval',
   'biological reference',
@@ -521,16 +590,38 @@ const NOISE_WORDS = [
   'units',
   'page',
   'hospital',
+  'patient name',
+  'patient id',
   'patient',
   'laboratory',
   'signature',
   'authorized',
   'specimen',
   'dr.',
+  'dr ',
   'doctor',
+  'consultant',
+  'physician',
+  'referred by',
+  'ref by',
   'end of report',
   'reported on',
   'collected on',
+  'received on',
+  'sample id',
+  'barcode',
+  'bill no',
+  'reg no',
+  'registration',
+  'invoice',
+  'receipt',
+  'plot no',
+  'plot',
+  'phone',
+  'mobile',
+  'contact',
+  'email',
+  'address',
   'thyroid profile',
   'lipid profile',
   'complete blood count',
@@ -538,7 +629,15 @@ const NOISE_WORDS = [
   'biochemistry',
   'pathology report',
   'investigation',
-  'clinical pathology'
+  'clinical pathology',
+  'age',
+  'gender',
+  'years',
+  'male',
+  'female',
+  'sample type',
+  'lab no',
+  'diagnostic'
 ];
 
 // Robust Medical Parser that strictly validates test names and rejects OCR noise
@@ -645,8 +744,21 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
         // Look for numbers in textAfterTest (handling decimal numbers like 86.90, 1.71, 108.3, 5.4, 9.48, 3.52)
         const numbers = textAfterTest.match(/\b\d+(\.\d+)?\b/g);
         if (numbers && numbers.length > 0) {
-          // The result value is the first number in textAfterTest
-          let resultVal = numbers[0];
+          // Reject phone numbers, PIN codes, dates, barcode IDs, and demographics
+          const validNum = numbers.find(n => {
+            const val = parseFloat(n);
+            // Long numbers (>= 6 digits) are phone numbers or barcodes
+            if (n.replace('.', '').length >= 6) return false;
+            // Test results are rarely over 10000 except platelet / WBC absolute counts
+            if (val > 10000 && test.name !== 'Platelet Count' && test.name !== 'White Blood Cells (WBC)') return false;
+            // Reject 4-digit years (e.g. 1980 - 2030) if no lab unit on line
+            if (val >= 1950 && val <= 2035 && !line.match(/(mg\/dL|mg\/dl|uIU|ng\/mL|ug\/dL|g\/dL)/i)) return false;
+            return true;
+          });
+
+          if (!validNum) continue;
+
+          let resultVal = validNum;
 
           // Extract reference range if present
           let refStr = test.defaultRef;

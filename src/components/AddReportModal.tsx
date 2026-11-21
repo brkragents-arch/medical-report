@@ -215,43 +215,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
         } catch (e) {}
       }
 
-      // If OCR couldn't extract enough lines (e.g. handwriting, bad lighting, or PDF image), provide intelligent clinical fallback based on filename or standard metabolic battery
-      if (extractedLines.length === 0) {
-        const lowerName = file.name.toLowerCase();
-        if (lowerName.includes('cbc') || lowerName.includes('blood') || lowerName.includes('hemogram')) {
-          extractedLines = [
-            'Hemoglobin: 13.5 g/dL (Ref: 13.5 - 17.5)',
-            'Hematocrit: 41.2 % (Ref: 40.0 - 52.0)',
-            'White Blood Cells (WBC): 7.40 x10^3/mcL (Ref: 4.50 - 11.00)',
-            'Platelet Count: 245 x10^3/mcL (Ref: 150 - 450)',
-            'MCV: 88.2 fL (Ref: 80.0 - 100.0)',
-            'Serum Ferritin: 140 ng/mL (Ref: 30 - 300)'
-          ];
-        } else if (lowerName.includes('lipid') || lowerName.includes('cholesterol') || lowerName.includes('cardiac')) {
-          extractedLines = [
-            'Total Cholesterol: 238 mg/dL (Ref: < 200)',
-            'Triglycerides: 215 mg/dL (Ref: < 150)',
-            'HDL Cholesterol: 41 mg/dL (Ref: > 40)',
-            'LDL Calculated: 154 mg/dL (Ref: < 100)',
-            'hs-CRP: 3.20 mg/L (Ref: < 1.00)',
-            'Apolipoprotein B: 118 mg/dL (Ref: < 90)'
-          ];
-        } else {
-          extractedLines = [
-            'Fasting Blood Glucose: 138 mg/dL (Ref: 70 - 99)',
-            'HbA1c: 7.2 % (Ref: 4.0 - 5.6)',
-            'Total Cholesterol: 232 mg/dL (Ref: < 200)',
-            'Triglycerides: 205 mg/dL (Ref: < 150)',
-            'HDL Cholesterol: 42 mg/dL (Ref: > 40)',
-            'LDL Cholesterol: 152 mg/dL (Ref: < 100)',
-            'Serum Creatinine: 1.08 mg/dL (Ref: 0.70 - 1.30)',
-            'eGFR: 84 mL/min (Ref: > 90)',
-            'ALT / SGPT: 46 U/L (Ref: 7 - 40)',
-            'TSH: 4.8 mIU/L (Ref: 0.45 - 4.50)',
-            '25-OH Vitamin D: 18.5 ng/mL (Ref: >= 30.0)'
-          ];
-        }
-      }
+      // DO NOT inject fake/dummy tests! Keep strictly to what was in the user's actual document.
 
       const docId = `scan-${Date.now()}-${i}`;
       let previewUrl = createDocumentSvgPreview(file.name, patientName || 'Patient', extractedLines);
@@ -1147,7 +1111,15 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
 
                         {/* List of Extracted Lines */}
                         <div className="space-y-1.5">
-                          {rawText.split('\n').filter(l => l.trim()).map((line, idx) => {
+                          {rawText.split('\n').filter(l => l.trim()).length === 0 ? (
+                            <div className="text-center py-6 px-3 text-slate-400 font-sans">
+                              <p className="font-semibold text-slate-600 text-xs">No parameters detected from this scan</p>
+                              <p className="text-[10px] text-slate-500 mt-1">
+                                Click <span className="font-bold text-teal-700">+ Add Test</span> above to insert values, or switch to <span className="font-bold text-slate-700">Full Editor</span> to paste text.
+                              </p>
+                            </div>
+                          ) : (
+                            rawText.split('\n').filter(l => l.trim()).map((line, idx) => {
                             const isEditing = editingLineIdx === idx;
 
                             return (
@@ -1204,7 +1176,7 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
                                 )}
                               </div>
                             );
-                          })}
+                          }))}
                         </div>
                       </div>
                     </div>

@@ -1465,6 +1465,7 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
                       <img 
                         src={activeStagedFile.previewUrl} 
                         alt="Scanned Laboratory Document" 
+                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                         className="max-h-full object-contain rounded-lg shadow-2xs"
                       />
                     ) : (

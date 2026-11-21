@@ -2606,3 +2606,76 @@ export const MOCK_REPORTS: Record<string, LabReport> = {
     ]
   }
 };
+
+export const INITIAL_PATIENT_REPORTS: Record<string, LabReport[]> = {
+  'p-1': [
+    {
+      ...MOCK_REPORTS['p-1'],
+      reportTitle: 'Comprehensive Metabolic, Lipid & Hematology Panel (Current)'
+    },
+    {
+      ...MOCK_REPORTS['p-1'],
+      id: 'rep-001-past1',
+      reportDate: 'April 14, 2026',
+      collectionDate: 'April 13, 2026 (08:00 AM Fasting)',
+      reportTitle: 'Semi-Annual Metabolic & Hematology Follow-Up',
+      labName: 'Quest Diagnostics Clinical Laboratories',
+      tests: MOCK_REPORTS['p-1'].tests.map(t => ({
+        ...t,
+        value: t.previousNumericValue !== undefined ? t.previousNumericValue : t.value,
+        numericValue: t.previousNumericValue !== undefined ? t.previousNumericValue : t.numericValue,
+        status: (t.previousNumericValue !== undefined && t.refRange.min && t.previousNumericValue < t.refRange.min) ? 'Low' : (t.previousNumericValue !== undefined && t.refRange.max && t.previousNumericValue > t.refRange.max) ? 'High' : 'Normal'
+      }))
+    },
+    {
+      ...MOCK_REPORTS['p-1'],
+      id: 'rep-001-past2',
+      reportDate: 'October 22, 2025',
+      collectionDate: 'October 21, 2025 (07:45 AM Fasting)',
+      reportTitle: 'Annual Executive Health Baseline Checkup',
+      labName: 'BioReference Laboratories Diagnostic Network',
+      tests: MOCK_REPORTS['p-1'].tests.map(t => {
+        const histPoint = t.history?.find(h => h.date.includes('2025'));
+        const val = histPoint ? histPoint.value : t.value;
+        return {
+          ...t,
+          value: val,
+          numericValue: typeof val === 'number' ? val : t.numericValue,
+          status: histPoint ? histPoint.status : t.status
+        };
+      })
+    }
+  ],
+  'p-2': [
+    {
+      ...MOCK_REPORTS['p-2'],
+      reportTitle: 'Comprehensive Glycemic & Renal Profile (Current)'
+    },
+    {
+      ...MOCK_REPORTS['p-2'],
+      id: 'rep-002-past1',
+      reportDate: 'May 10, 2026',
+      collectionDate: 'May 09, 2026 (08:15 AM Fasting)',
+      reportTitle: 'Quarterly Diabetic Glycemic & Renal Follow-Up',
+      labName: 'Metropolitan Endocrine & Kidney Center Laboratories'
+    }
+  ],
+  'p-3': [
+    {
+      ...MOCK_REPORTS['p-3'],
+      reportTitle: 'Annual Executive Wellness Checkup'
+    }
+  ],
+  'p-4': [
+    {
+      ...MOCK_REPORTS['p-4'],
+      reportTitle: 'Thyroid Function & Hematology Screening'
+    }
+  ],
+  'p-5': [
+    {
+      ...MOCK_REPORTS['p-5'],
+      reportTitle: 'Cardiovascular Risk & Hepatic Function Panel'
+    }
+  ]
+};

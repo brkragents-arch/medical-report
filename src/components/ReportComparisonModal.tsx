@@ -15,18 +15,42 @@ import { LabReport } from '../types';
 
 interface ReportComparisonModalProps {
   report: LabReport;
+  allPatientReports?: LabReport[];
   onClose: () => void;
   onSelectTest: (testId: string) => void;
 }
 
 export const ReportComparisonModal: React.FC<ReportComparisonModalProps> = ({
   report,
+  allPatientReports,
   onClose,
   onSelectTest
 }) => {
+  const reportsList = allPatientReports && allPatientReports.length > 0 ? allPatientReports : [report];
+  const [reportAId, setReportAId] = useState<string>(report.id);
+  const [reportBId, setReportBId] = useState<string>(reportsList.length > 1 ? reportsList[1].id : report.id);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
 
-  const comparableTests = report.tests.filter(t => t.previousValue !== undefined);
+  const reportA = reportsList.find(r => r.id === reportAId) || report;
+  const reportB = reportsList.find(r => r.id === reportBId) || (reportsList.length > 1 ? reportsList[1] : report);
+
+  // Match tests between reportA and reportB
+  const matchedTests = reportA.tests.map(tA => {
+    const foundB = reportB.tests.find(tB => tB.name.toLowerCase() === tA.name.toLowerCase());
+    const prevNumeric = foundB 
+      ? (typeof foundB.numericValue === 'number' ? foundB.numericValue : (typeof foundB.value === 'number' ? foundB.value : undefined))
+      : tA.previousNumericValue;
+    const prevDate = foundB ? reportB.reportDate : (tA.previousDate || 'Previous');
+
+    return {
+      ...tA,
+      comparisonPreviousValue: foundB ? foundB.value : tA.previousValue,
+      comparisonPreviousNumeric: prevNumeric,
+      comparisonPreviousDate: prevDate
+    };
+  });
+
+  const comparableTests = matchedTests.filter(t => t.comparisonPreviousValue !== undefined || t.previousValue !== undefined);
 
   const categories = Array.from(new Set(comparableTests.map(t => t.category)));
 
@@ -51,7 +75,7 @@ export const ReportComparisonModal: React.FC<ReportComparisonModalProps> = ({
               </h2>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Side-by-side comparative analysis between Previous Record ({comparableTests[0]?.previousDate || 'Previous'}) and Current Analysis ({report.reportDate}).
+              Side-by-side comparative analysis between {reportB.reportDate} ({reportB.reportTitle || reportB.labName}) and {reportA.reportDate} ({reportA.reportTitle || reportA.labName}).
             </p>
           </div>
 
@@ -62,6 +86,45 @@ export const ReportComparisonModal: React.FC<ReportComparisonModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Multi-Report Comparison Selectors */}
+        {reportsList.length > 1 && (
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Select Base Report (Current / Newer):
+              </label>
+              <select
+                value={reportAId}
+                onChange={e => setReportAId(e.target.value)}
+                className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-bold text-slate-900"
+              >
+                {reportsList.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.reportDate} — {r.reportTitle || r.labName} ({r.tests.length} tests)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Compare Against Historical Report (Past / Older):
+              </label>
+              <select
+                value={reportBId}
+                onChange={e => setReportBId(e.target.value)}
+                className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-bold text-slate-900"
+              >
+                {reportsList.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.reportDate} — {r.reportTitle || r.labName} ({r.tests.length} tests)
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         {/* Category Tabs */}
         <div className="flex items-center space-x-2 overflow-x-auto pb-2 mb-4 text-xs">
@@ -96,17 +159,19 @@ export const ReportComparisonModal: React.FC<ReportComparisonModalProps> = ({
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-semibold text-[11px] uppercase tracking-wider">
                 <th className="py-2.5 px-3">Laboratory Parameter</th>
-                <th className="py-2.5 px-3 text-right">Previous ({comparableTests[0]?.previousDate || 'Past'})</th>
+                <th className="py-2.5 px-3 text-right">Past ({reportB.reportDate})</th>
                 <th className="py-2.5 px-3 text-center">Change</th>
-                <th className="py-2.5 px-3 text-right">Current ({report.reportDate})</th>
+                <th className="py-2.5 px-3 text-right">Current ({reportA.reportDate})</th>
                 <th className="py-2.5 px-3 text-center">Current Status</th>
                 <th className="py-2.5 px-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredTests.map((test) => {
-                const prev = Number(test.previousValue);
-                const curr = Number(test.value);
+                const prev = test.comparisonPreviousNumeric !== undefined 
+                  ? test.comparisonPreviousNumeric 
+                  : (typeof test.comparisonPreviousValue === 'number' ? test.comparisonPreviousValue : Number(test.previousValue));
+                const curr = typeof test.numericValue === 'number' ? test.numericValue : Number(test.value);
                 const diff = !isNaN(prev) && !isNaN(curr) ? Number((curr - prev).toFixed(2)) : null;
                 const percent = diff !== null && prev !== 0 ? Number(((diff / prev) * 100).toFixed(1)) : null;
 
@@ -118,7 +183,7 @@ export const ReportComparisonModal: React.FC<ReportComparisonModalProps> = ({
                     </td>
 
                     <td className="py-3 px-3 text-right font-mono text-slate-600">
-                      <span className="font-semibold">{test.previousValue}</span> {test.unit}
+                      <span className="font-semibold">{test.comparisonPreviousValue ?? test.previousValue}</span> {test.unit}
                     </td>
 
                     <td className="py-3 px-3 text-center">

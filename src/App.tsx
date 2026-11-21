@@ -17,14 +17,15 @@ import { ReportComparisonModal } from './components/ReportComparisonModal';
 import { AddReportModal } from './components/AddReportModal';
 import { PatientDocumentUploadModal } from './components/PatientDocumentUploadModal';
 import { EditDemographicsModal } from './components/EditDemographicsModal';
-import { MOCK_REPORTS, PATIENTS } from './data/mockReports';
+import { MOCK_REPORTS, PATIENTS, INITIAL_PATIENT_REPORTS } from './data/mockReports';
 import { LabReport, MedicalCategory, PatientProfile } from './types';
 import { ShieldCheck, Heart, Info, ArrowUp, Activity } from 'lucide-react';
 
 export function App() {
-  const [reportsMap, setReportsMap] = useState<Record<string, LabReport>>(MOCK_REPORTS);
+  const [patientReportsMap, setPatientReportsMap] = useState<Record<string, LabReport[]>>(INITIAL_PATIENT_REPORTS);
   const [patientList, setPatientList] = useState<PatientProfile[]>(PATIENTS);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('p-1');
+  const [selectedReportId, setSelectedReportId] = useState<string>('rep-001');
   const [selectedCategory, setSelectedCategory] = useState<MedicalCategory | null>(null);
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
   const [metricStatusFilter, setMetricStatusFilter] = useState<string | null>(null);
@@ -37,38 +38,76 @@ export function App() {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showEditDemographics, setShowEditDemographics] = useState(false);
 
-  const currentReport = reportsMap[selectedPatientId] || reportsMap['p-1'];
+  const currentPatientReports = patientReportsMap[selectedPatientId] || INITIAL_PATIENT_REPORTS['p-1'];
+  const currentReport = currentPatientReports.find(r => r.id === selectedReportId) || currentPatientReports[0];
   const activeTest = selectedTestId ? currentReport.tests.find(t => t.id === selectedTestId) || null : null;
 
-  const handleAddNewReport = (newReport: LabReport) => {
-    setReportsMap(prev => ({ ...prev, [newReport.patient.id]: newReport }));
-    setPatientList(prev => {
-      const exists = prev.some(p => p.id === newReport.patient.id);
-      return exists ? prev.map(p => p.id === newReport.patient.id ? newReport.patient : p) : [newReport.patient, ...prev];
-    });
-    setSelectedPatientId(newReport.patient.id);
+  const handleSelectReport = (reportId: string) => {
+    setSelectedReportId(reportId);
     setSelectedCategory(null);
     setSelectedTestId(null);
     setMetricStatusFilter(null);
   };
 
+  const handleSaveMultipleReports = (
+    patientId: string, 
+    newReports: LabReport[], 
+    newPatient?: PatientProfile
+  ) => {
+    if (newPatient) {
+      setPatientList(prev => [newPatient, ...prev]);
+      setPatientReportsMap(prev => ({
+        ...prev,
+        [newPatient.id]: newReports
+      }));
+      setSelectedPatientId(newPatient.id);
+      setSelectedReportId(newReports[0].id);
+    } else {
+      setPatientReportsMap(prev => {
+        const existing = prev[patientId] || [];
+        const existingIds = new Set(newReports.map(r => r.id));
+        const filteredExisting = existing.filter(r => !existingIds.has(r.id));
+        return {
+          ...prev,
+          [patientId]: [...newReports, ...filteredExisting]
+        };
+      });
+      setSelectedPatientId(patientId);
+      setSelectedReportId(newReports[0].id);
+    }
+
+    setSelectedCategory(null);
+    setSelectedTestId(null);
+    setMetricStatusFilter(null);
+  };
+
+  const handleAddNewReport = (newReport: LabReport) => {
+    handleSaveMultipleReports(newReport.patient.id, [newReport]);
+  };
+
   const handleUpdateCurrentReport = (updatedReport: LabReport) => {
-    setReportsMap(prev => ({ ...prev, [updatedReport.patient.id]: updatedReport }));
+    setPatientReportsMap(prev => {
+      const existing = prev[updatedReport.patient.id] || [];
+      const updatedList = existing.map(r => r.id === updatedReport.id ? updatedReport : r);
+      return {
+        ...prev,
+        [updatedReport.patient.id]: updatedList.length > 0 ? updatedList : [updatedReport]
+      };
+    });
     setSelectedCategory(null);
     setSelectedTestId(null);
   };
 
   const handleUpdatePatientDemographics = (updatedPatient: PatientProfile) => {
     setPatientList(prev => prev.map(p => p.id === updatedPatient.id ? updatedPatient : p));
-    setReportsMap(prev => {
-      const existing = prev[updatedPatient.id];
-      if (!existing) return prev;
+    setPatientReportsMap(prev => {
+      const existingReports = prev[updatedPatient.id] || [];
       return {
         ...prev,
-        [updatedPatient.id]: {
-          ...existing,
+        [updatedPatient.id]: existingReports.map(r => ({
+          ...r,
           patient: updatedPatient
-        }
+        }))
       };
     });
   };
@@ -94,6 +133,10 @@ export function App() {
         patientList={patientList}
         onSelectPatient={(pId) => {
           setSelectedPatientId(pId);
+          const reports = patientReportsMap[pId] || [];
+          if (reports.length > 0) {
+            setSelectedReportId(reports[0].id);
+          }
           setSelectedCategory(null);
           setSelectedTestId(null);
           setMetricStatusFilter(null);
@@ -110,6 +153,9 @@ export function App() {
         {/* Section B: Patient & Report Summary Card */}
         <PatientSummaryCard
           report={currentReport}
+          allPatientReports={currentPatientReports}
+          selectedReportId={currentReport.id}
+          onSelectReport={handleSelectReport}
           activeStatusFilter={metricStatusFilter}
           onOpenUploadModal={() => setShowUploadModal(true)}
           onOpenEditDemographics={() => setShowEditDemographics(true)}
@@ -153,6 +199,7 @@ export function App() {
         {/* Section G: Trend Analysis Dashboard */}
         <TrendAnalysisDashboard
           report={currentReport}
+          allPatientReports={currentPatientReports}
           onSelectTestModal={(tId) => setSelectedTestId(tId)}
         />
 
@@ -264,6 +311,7 @@ export function App() {
       {showCompareModal && (
         <ReportComparisonModal
           report={currentReport}
+          allPatientReports={currentPatientReports}
           onClose={() => setShowCompareModal(false)}
           onSelectTest={(tId) => {
             setShowCompareModal(false);
@@ -285,9 +333,11 @@ export function App() {
       {/* 6. Upload Patient Lab Records (PDF, JPEG, PNG) Modal */}
       {showUploadModal && (
         <PatientDocumentUploadModal
+          patientList={patientList}
+          currentPatientId={selectedPatientId}
           currentReport={currentReport}
           onClose={() => setShowUploadModal(false)}
-          onUpdateReport={handleUpdateCurrentReport}
+          onSaveMultipleReports={handleSaveMultipleReports}
           onOpenOriginalViewer={() => setShowOriginalReport(true)}
         />
       )}

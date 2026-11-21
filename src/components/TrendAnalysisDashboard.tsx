@@ -21,19 +21,54 @@ import {
   Activity,
   History
 } from 'lucide-react';
-import { LabReport, LabTest } from '../types';
+import { LabReport, LabTest, ResultStatus } from '../types';
 
 interface TrendAnalysisDashboardProps {
   report: LabReport;
+  allPatientReports?: LabReport[];
   onSelectTestModal?: (testId: string) => void;
 }
 
 export const TrendAnalysisDashboard: React.FC<TrendAnalysisDashboardProps> = ({
   report,
+  allPatientReports,
   onSelectTestModal
 }) => {
+  // Dynamically assemble history points across all patient reports if available
+  const testsWithCrossReportHistory = report.tests.map(t => {
+    if (allPatientReports && allPatientReports.length > 1) {
+      const dynamicHistory: { date: string; value: number; unit: string; status: ResultStatus }[] = [];
+      
+      allPatientReports.forEach(r => {
+        const matchingTest = r.tests.find(otherT => otherT.name.toLowerCase() === t.name.toLowerCase());
+        if (matchingTest) {
+          const val = typeof matchingTest.numericValue === 'number' 
+            ? matchingTest.numericValue 
+            : (typeof matchingTest.value === 'number' ? matchingTest.value : parseFloat(String(matchingTest.value)));
+          
+          if (!isNaN(val)) {
+            dynamicHistory.push({
+              date: r.reportDate.split(',')[0],
+              value: val,
+              unit: matchingTest.unit,
+              status: matchingTest.status
+            });
+          }
+        }
+      });
+
+      if (dynamicHistory.length > 1) {
+        return {
+          ...t,
+          history: dynamicHistory
+        };
+      }
+    }
+    return t;
+  });
+
   // Find all tests that have historical trend data
-  const trendableTests = report.tests.filter(t => t.history && t.history.length > 1);
+  const trendableTests = testsWithCrossReportHistory.filter(t => t.history && t.history.length > 1);
 
   const [selectedTestId, setSelectedTestId] = useState<string>(
     trendableTests.length > 0 ? trendableTests[0].id : ''

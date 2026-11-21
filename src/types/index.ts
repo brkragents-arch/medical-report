@@ -205,6 +205,12 @@ export interface LabReport {
   patient: PatientProfile;
   reportDate: string;
   collectionDate: string;
+  reportTitle?: string;
+  fileMeta?: {
+    name: string;
+    size: string;
+    type: string;
+  };
   labName: string;
   labAddress: string;
   accreditation: string;

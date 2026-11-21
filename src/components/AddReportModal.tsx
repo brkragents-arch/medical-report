@@ -15,7 +15,7 @@ import {
   Calendar,
   Droplet
 } from 'lucide-react';
-import { LabReport, LabTest, MedicalCategory, PatientProfile, ResultStatus, TestPriority } from '../types';
+import { LabReport, LabTest, MedicalCategory, PatientProfile, ResultStatus, TestPriority, DoctorQuestion } from '../types';
 
 interface AddReportModalProps {
   patientList: PatientProfile[];
@@ -292,13 +292,13 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       });
     }
 
-    const doctorQuestions = abnormalTests.slice(0, 6).map((t, idx) => ({
+    const doctorQuestions: DoctorQuestion[] = abnormalTests.slice(0, 6).map((t, idx) => ({
       id: `dq-c-${idx + 1}`,
       question: t.doctorQuestion,
       relatedTestName: t.name,
       whyItMatters: t.whyItMatters,
       discussed: false,
-      priority: 'high' as const
+      priority: 'high'
     }));
 
     if (doctorQuestions.length === 0) {

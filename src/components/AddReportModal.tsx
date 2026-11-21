@@ -18,7 +18,8 @@ import {
   RefreshCw,
   Check,
   Eye,
-  FileCheck
+  FileCheck,
+  Edit2
 } from 'lucide-react';
 import { LabReport, LabTest, MedicalCategory, PatientProfile, ResultStatus, TestPriority, DoctorQuestion, OriginalReportBoundingBox } from '../types';
 import { runRealOcr, parseOcrTextToLabLines } from '../utils/ocrEngine';
@@ -91,6 +92,15 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
   const [isScanningOcr, setIsScanningOcr] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
+
+  // Parameter Line Editing & Manual Test Insertion
+  const [editingLineIdx, setEditingLineIdx] = useState<number | null>(null);
+  const [editingLineVal, setEditingLineVal] = useState<string>('');
+  const [showAddCustomModal, setShowAddCustomModal] = useState<boolean>(false);
+  const [newCustomName, setNewCustomName] = useState<string>('');
+  const [newCustomVal, setNewCustomVal] = useState<string>('');
+  const [newCustomUnit, setNewCustomUnit] = useState<string>('mg/dL');
+  const [newCustomRef, setNewCustomRef] = useState<string>('Standard range');
 
   const scanFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -286,36 +296,43 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
     setIsScanningOcr(false);
   };
 
-  // 1-Click Load & Scan Sample Lab Document
+  // 1-Click Load & Scan Matched KSN Diagnostic Scan (from user upload)
   const handleLoadSampleScan = () => {
     setIsScanningOcr(true);
     setScanProgress(25);
+
+    // Auto-populate patient details matching the user's clinical scan
+    setPatientName('KSN');
+    setDob('1986-03-03');
+    setAge(40);
+    setGender('Female');
+    setBloodGroup('Unknown');
+    setLabName('Thyrocare & Quest Diagnostic Pathology');
+    setCollectionDate('October 23, 2026 (08:00 AM)');
 
     setTimeout(() => {
       setScanProgress(70);
       setTimeout(() => {
         setScanProgress(100);
         const sampleLines = [
-          'Fasting Blood Glucose: 136 mg/dL (Ref: 70 - 99)',
-          'HbA1c: 7.1 % (Ref: 4.0 - 5.6)',
-          'Total Cholesterol: 236 mg/dL (Ref: < 200)',
-          'Triglycerides: 208 mg/dL (Ref: < 150)',
-          'HDL Cholesterol: 42 mg/dL (Ref: > 40)',
-          'LDL Calculated: 154 mg/dL (Ref: < 100)',
-          'Serum Creatinine: 1.06 mg/dL (Ref: 0.70 - 1.30)',
-          'eGFR: 82 mL/min (Ref: > 90)',
-          'ALT / SGPT: 44 U/L (Ref: 7 - 40)',
-          'TSH: 5.2 mIU/L (Ref: 0.45 - 4.50)',
-          '25-OH Vitamin D: 19.0 ng/mL (Ref: >= 30.0)',
-          'Serum Ferritin: 280 ng/mL (Ref: 30 - 300)'
+          'Insulin (Fasting): 1.71 uIU/mL (Ref: 2.0 - 18.4)',
+          'Fasting Blood Sugar: 86.90 mg/dL (Ref: 70 - 105)',
+          'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: < 5.7)',
+          'Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)',
+          'Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)',
+          'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.95 - 13.29)',
+          'Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)',
+          'Neutrophils: 58.7 % (Ref: 40 - 70)',
+          'Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)',
+          'Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)'
         ];
 
         const sampleDoc: ScannedReportDoc = {
           id: `sample-scan-${Date.now()}`,
-          name: 'Quest_Diagnostics_Metabolic_Screen.pdf',
-          size: '1.2 MB',
-          type: 'application/pdf',
-          previewUrl: createDocumentSvgPreview('Quest Comprehensive Metabolic Report', patientName || 'KSN', sampleLines),
+          name: 'KSN_Diagnostic_Laboratory_Scan.png',
+          size: '1.4 MB',
+          type: 'image/png',
+          previewUrl: createDocumentSvgPreview('KSN Comprehensive Laboratory Diagnostic Scan', 'KSN', sampleLines),
           extractedLines: sampleLines
         };
 
@@ -323,8 +340,42 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
         setActiveScannedDocId(sampleDoc.id);
         setRawText(sampleLines.join('\n'));
         setIsScanningOcr(false);
-      }, 400);
-    }, 400);
+      }, 350);
+    }, 350);
+  };
+
+  // Line Editing & Deletion Handlers
+  const handleDeleteLine = (idxToDelete: number) => {
+    const lines = rawText.split('\n').filter(l => l.trim().length > 0);
+    const updated = lines.filter((_, idx) => idx !== idxToDelete);
+    setRawText(updated.join('\n'));
+    if (editingLineIdx === idxToDelete) {
+      setEditingLineIdx(null);
+    }
+  };
+
+  const handleStartEditLine = (idx: number, currentVal: string) => {
+    setEditingLineIdx(idx);
+    setEditingLineVal(currentVal);
+  };
+
+  const handleSaveEditLine = (idx: number) => {
+    if (!editingLineVal.trim()) return;
+    const lines = rawText.split('\n').filter(l => l.trim().length > 0);
+    lines[idx] = editingLineVal.trim();
+    setRawText(lines.join('\n'));
+    setEditingLineIdx(null);
+  };
+
+  const handleAddCustomLine = () => {
+    if (!newCustomName.trim() || !newCustomVal.trim()) return;
+    const formatted = `${newCustomName.trim()}: ${newCustomVal.trim()} ${newCustomUnit.trim()} (Ref: ${newCustomRef.trim() || 'Standard range'})`;
+    const lines = rawText.split('\n').filter(l => l.trim().length > 0);
+    lines.push(formatted);
+    setRawText(lines.join('\n'));
+    setNewCustomName('');
+    setNewCustomVal('');
+    setShowAddCustomModal(false);
   };
 
   // Drag and drop handlers
@@ -1015,14 +1066,147 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
                       )}
                     </div>
 
-                    {/* Extracted Parameter Lines */}
-                    <div className="bg-white rounded-lg border border-slate-200 p-2 h-56 overflow-y-auto font-mono text-[11px] space-y-1">
-                      {rawText.split('\n').filter(l => l.trim()).map((line, idx) => (
-                        <div key={idx} className="p-1 bg-slate-50 rounded border border-slate-200 flex items-center justify-between">
-                          <span className="text-slate-800 truncate">{line}</span>
-                          <span className="text-emerald-700 text-[10px] font-bold shrink-0 ml-1.5">✓ OCR</span>
+                    {/* Extracted Parameter Lines with Inline Edit & Delete */}
+                    <div className="bg-white rounded-lg border border-slate-200 p-2.5 h-56 overflow-y-auto font-mono text-[11px] flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-slate-100">
+                          <span className="font-sans font-bold text-slate-700 text-[10px] uppercase tracking-wide">
+                            Extracted Parameters ({rawText.split('\n').filter(l => l.trim()).length}):
+                          </span>
+                          <div className="flex items-center space-x-1.5 font-sans">
+                            <button
+                              type="button"
+                              onClick={() => setShowAddCustomModal(true)}
+                              className="px-2 py-0.5 text-[10px] font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 rounded border border-teal-200 flex items-center space-x-1"
+                            >
+                              <Plus className="w-3 h-3" />
+                              <span>Add Test</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setInputMode('paste')}
+                              className="px-2 py-0.5 text-[10px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded flex items-center space-x-1"
+                              title="Switch to full text editor"
+                            >
+                              <FileText className="w-3 h-3 text-slate-500" />
+                              <span>Full Editor</span>
+                            </button>
+                          </div>
                         </div>
-                      ))}
+
+                        {/* Inline Add Modal */}
+                        {showAddCustomModal && (
+                          <div className="bg-teal-50/70 p-2 rounded-lg border border-teal-300 mb-2 font-sans space-y-1.5 animate-in fade-in duration-150">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-[10px] text-teal-900">Add Laboratory Parameter</span>
+                              <button onClick={() => setShowAddCustomModal(false)} className="text-slate-400 hover:text-slate-700">
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 text-xs">
+                              <input
+                                type="text"
+                                placeholder="Test Name (e.g. Fasting Blood Sugar)"
+                                value={newCustomName}
+                                onChange={e => setNewCustomName(e.target.value)}
+                                className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                              />
+                              <input
+                                type="text"
+                                placeholder="Value (e.g. 86.90)"
+                                value={newCustomVal}
+                                onChange={e => setNewCustomVal(e.target.value)}
+                                className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px] font-mono"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 text-xs">
+                              <input
+                                type="text"
+                                placeholder="Unit (e.g. mg/dL, %)"
+                                value={newCustomUnit}
+                                onChange={e => setNewCustomUnit(e.target.value)}
+                                className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                              />
+                              <input
+                                type="text"
+                                placeholder="Ref Range (e.g. 70 - 105)"
+                                value={newCustomRef}
+                                onChange={e => setNewCustomRef(e.target.value)}
+                                className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleAddCustomLine}
+                              className="w-full py-1 bg-teal-600 hover:bg-teal-700 text-white rounded text-[10px] font-bold"
+                            >
+                              + Save &amp; Append Test
+                            </button>
+                          </div>
+                        )}
+
+                        {/* List of Extracted Lines */}
+                        <div className="space-y-1.5">
+                          {rawText.split('\n').filter(l => l.trim()).map((line, idx) => {
+                            const isEditing = editingLineIdx === idx;
+
+                            return (
+                              <div key={idx} className="p-1.5 bg-slate-50 hover:bg-slate-100/80 rounded border border-slate-200 flex items-center justify-between gap-1 group transition-colors">
+                                {isEditing ? (
+                                  <div className="flex-1 flex items-center space-x-1 font-sans">
+                                    <input
+                                      type="text"
+                                      value={editingLineVal}
+                                      onChange={e => setEditingLineVal(e.target.value)}
+                                      className="flex-1 bg-white border border-teal-500 rounded px-1.5 py-0.5 text-[11px] font-mono"
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveEditLine(idx)}
+                                      className="p-1 bg-teal-600 text-white rounded hover:bg-teal-700"
+                                      title="Save change"
+                                    >
+                                      <Check className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingLineIdx(null)}
+                                      className="p-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300"
+                                      title="Cancel"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <span className="text-slate-800 truncate select-all">{line}</span>
+                                    <div className="flex items-center space-x-1 shrink-0 font-sans">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartEditLine(idx, line)}
+                                        className="p-0.5 text-slate-400 hover:text-teal-700 rounded"
+                                        title="Edit this extracted value"
+                                      >
+                                        <Edit2 className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteLine(idx)}
+                                        className="p-0.5 text-slate-400 hover:text-rose-600 rounded"
+                                        title="Delete this line"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                      <span className="text-emerald-700 text-[10px] font-bold ml-1">✓</span>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -16,6 +16,7 @@ import {
   Layers,
   ArrowRight,
   Trash2,
+  Edit2,
   User,
   UserPlus,
   UserCheck,
@@ -278,6 +279,15 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
   const [isScanningBatch, setIsScanningBatch] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
   const [scanPhaseLabel, setScanPhaseLabel] = useState('');
+
+  // Inline Test Line Editing & Custom Addition State
+  const [editingLineIdx, setEditingLineIdx] = useState<number | null>(null);
+  const [editingLineVal, setEditingLineVal] = useState<string>('');
+  const [showAddCustomModal, setShowAddCustomModal] = useState<boolean>(false);
+  const [newCustomName, setNewCustomName] = useState<string>('');
+  const [newCustomVal, setNewCustomVal] = useState<string>('');
+  const [newCustomUnit, setNewCustomUnit] = useState<string>('mg/dL');
+  const [newCustomRef, setNewCustomRef] = useState<string>('Normal');
 
   const multiFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -564,6 +574,92 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
     setActiveFileId(list[0].id);
     // Automatically run OCR
     runBatchAIScanner(list);
+  };
+
+  // 1-Click Load KSN Diagnostic Pathology Scan (Exact User Scan - 10 Parameters)
+  const handleLoadKsnScanBattery = () => {
+    const ksnLines = [
+      'Insulin (Fasting): 1.71 uIU/mL (Ref: 2.0 - 18.4)',
+      'Fasting Blood Sugar: 86.90 mg/dL (Ref: 70 - 105)',
+      'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: < 5.7)',
+      'Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)',
+      'Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)',
+      'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.95 - 13.29)',
+      'Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)',
+      'Neutrophils: 58.7 % (Ref: 40 - 70)',
+      'Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)',
+      'Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)'
+    ];
+
+    const ksnParsed = ksnLines.map((l, idx) => parseLineToTest(l, idx, 1)).filter(Boolean) as LabTest[];
+
+    const ksnItem: StagedReportFile = {
+      id: `ksn-scan-${Date.now()}`,
+      name: 'KSN_Diagnostic_Laboratory_Slip.pdf',
+      type: 'application/pdf',
+      size: '1.4 MB',
+      reportTitle: 'Clinical Pathology & Endocrine Panel (KSN)',
+      reportDate: 'October 23, 2026',
+      collectionDate: 'October 23, 2026 (08:00 AM)',
+      labName: 'Thyrocare & Quest Diagnostic Laboratories',
+      category: 'Thyroid Function',
+      extractedLines: ksnLines,
+      parsedTests: ksnParsed,
+      scanStatus: 'done'
+    };
+
+    setPatientMode('new');
+    setNewFullName('KSN');
+    setNewDob('1986-03-03');
+    setNewAge(40);
+    setNewGender('Female');
+    setNewBloodGroup('Unknown');
+
+    setStagedFiles([ksnItem]);
+    setActiveFileId(ksnItem.id);
+  };
+
+  // Inline Line Editing Handlers
+  const handleStartEditLine = (idx: number, line: string) => {
+    setEditingLineIdx(idx);
+    setEditingLineVal(line);
+  };
+
+  const handleSaveEditLine = (idx: number) => {
+    if (!activeFileId || !editingLineVal.trim()) return;
+    setStagedFiles(prev => prev.map(f => {
+      if (f.id !== activeFileId) return f;
+      const updatedLines = [...f.extractedLines];
+      updatedLines[idx] = editingLineVal.trim();
+      const updatedParsed = updatedLines.map((l, lIdx) => parseLineToTest(l, lIdx, 1)).filter(Boolean) as LabTest[];
+      return { ...f, extractedLines: updatedLines, parsedTests: updatedParsed };
+    }));
+    setEditingLineIdx(null);
+  };
+
+  const handleDeleteLine = (idx: number) => {
+    if (!activeFileId) return;
+    setStagedFiles(prev => prev.map(f => {
+      if (f.id !== activeFileId) return f;
+      const updatedLines = f.extractedLines.filter((_, i) => i !== idx);
+      const updatedParsed = updatedLines.map((l, lIdx) => parseLineToTest(l, lIdx, 1)).filter(Boolean) as LabTest[];
+      return { ...f, extractedLines: updatedLines, parsedTests: updatedParsed };
+    }));
+    if (editingLineIdx === idx) setEditingLineIdx(null);
+  };
+
+  const handleAddCustomLine = () => {
+    if (!activeFileId || !newCustomName.trim() || !newCustomVal.trim()) return;
+    const formatted = `${newCustomName.trim()}: ${newCustomVal.trim()} ${newCustomUnit.trim()} (Ref: ${newCustomRef.trim() || 'Standard range'})`;
+    setStagedFiles(prev => prev.map(f => {
+      if (f.id !== activeFileId) return f;
+      const updatedLines = [...f.extractedLines, formatted];
+      const updatedParsed = updatedLines.map((l, lIdx) => parseLineToTest(l, lIdx, 1)).filter(Boolean) as LabTest[];
+      return { ...f, extractedLines: updatedLines, parsedTests: updatedParsed };
+    }));
+    setNewCustomName('');
+    setNewCustomVal('');
+    setShowAddCustomModal(false);
   };
 
   // Remove a staged report
@@ -1079,7 +1175,7 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
 
         {/* STEP 2: MULTI-FILE UPLOAD & DRAG/DROP ZONE */}
         <div className="mb-5">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
             <div className="flex items-center space-x-2">
               <span className="w-5 h-5 rounded-full bg-teal-700 text-white font-bold flex items-center justify-center text-[10px]">2</span>
               <span className="font-bold text-slate-900 text-xs uppercase tracking-wide">
@@ -1087,14 +1183,26 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={handleLoad5ScanBattery}
-              className="inline-flex items-center px-2.5 py-1 text-xs font-bold rounded-lg text-teal-800 bg-teal-50 border border-teal-300 hover:bg-teal-100 transition-colors shadow-2xs"
-            >
-              <Sparkles className="w-3.5 h-3.5 mr-1 text-teal-600" />
-              <span>Load 5-Scan Clinical Battery (All Panels)</span>
-            </button>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={handleLoadKsnScanBattery}
+                className="inline-flex items-center px-2.5 py-1 text-xs font-bold rounded-lg text-emerald-800 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 transition-colors shadow-2xs"
+                title="Load patient KSN lab scan with 10 exact parameters (Insulin, Glucose, HbA1c, T3, T4, TSH, Neutrophils, Urine)"
+              >
+                <Sparkles className="w-3.5 h-3.5 mr-1 text-emerald-600" />
+                <span>Load KSN Diagnostic Scan (10 Tests)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLoad5ScanBattery}
+                className="inline-flex items-center px-2.5 py-1 text-xs font-bold rounded-lg text-teal-800 bg-teal-50 border border-teal-300 hover:bg-teal-100 transition-colors shadow-2xs"
+              >
+                <Sparkles className="w-3.5 h-3.5 mr-1 text-teal-600" />
+                <span>Load 5-Scan Battery</span>
+              </button>
+            </div>
           </div>
 
           <div
@@ -1311,25 +1419,140 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
                     )}
                   </div>
 
-                  {/* Right: Extracted Tests Breakdown */}
-                  <div className="bg-white rounded-xl border border-slate-200 p-3 h-72 overflow-y-auto">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-bold text-slate-900 text-xs">
-                        Extracted Laboratory Parameters ({activeStagedFile.extractedLines.length}):
-                      </span>
-                      <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center">
-                        <Check className="w-3 h-3 mr-1" />
-                        OCR Verified
-                      </span>
-                    </div>
-
-                    <div className="space-y-1.5 font-mono text-[11px]">
-                      {activeStagedFile.extractedLines.map((line, lIdx) => (
-                        <div key={lIdx} className="p-1.5 bg-slate-50 rounded border border-slate-200 flex items-center justify-between">
-                          <span className="text-slate-800">{line}</span>
-                          <span className="text-emerald-700 text-[10px] font-bold shrink-0 ml-2">✓ Ready</span>
+                  {/* Right: Extracted Tests Breakdown with Inline Edit & Delete */}
+                  <div className="bg-white rounded-xl border border-slate-200 p-3 h-72 overflow-y-auto flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100">
+                        <span className="font-bold text-slate-900 text-xs">
+                          Extracted Laboratory Parameters ({activeStagedFile.extractedLines.length}):
+                        </span>
+                        <div className="flex items-center space-x-1.5 font-sans">
+                          <button
+                            type="button"
+                            onClick={() => setShowAddCustomModal(true)}
+                            className="px-2 py-0.5 text-[10px] font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 rounded border border-teal-200 flex items-center space-x-1"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Add Test</span>
+                          </button>
+                          <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center">
+                            <Check className="w-3 h-3 mr-1" />
+                            OCR Ready
+                          </span>
                         </div>
-                      ))}
+                      </div>
+
+                      {/* Add Test Popover */}
+                      {showAddCustomModal && (
+                        <div className="bg-teal-50/80 p-2.5 rounded-lg border border-teal-300 mb-2 font-sans space-y-1.5 animate-in fade-in duration-150">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[10px] text-teal-900">Add Laboratory Parameter to Scan</span>
+                            <button onClick={() => setShowAddCustomModal(false)} className="text-slate-400 hover:text-slate-700">
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 text-xs">
+                            <input
+                              type="text"
+                              placeholder="Test Name (e.g. Fasting Blood Sugar)"
+                              value={newCustomName}
+                              onChange={e => setNewCustomName(e.target.value)}
+                              className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Value (e.g. 86.90)"
+                              value={newCustomVal}
+                              onChange={e => setNewCustomVal(e.target.value)}
+                              className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px] font-mono"
+                            />
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 text-xs">
+                            <input
+                              type="text"
+                              placeholder="Unit (e.g. mg/dL, %)"
+                              value={newCustomUnit}
+                              onChange={e => setNewCustomUnit(e.target.value)}
+                              className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Ref Range (e.g. 70 - 105)"
+                              value={newCustomRef}
+                              onChange={e => setNewCustomRef(e.target.value)}
+                              className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px]"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleAddCustomLine}
+                            className="w-full py-1 bg-teal-600 hover:bg-teal-700 text-white rounded text-[10px] font-bold"
+                          >
+                            + Save &amp; Append Test
+                          </button>
+                        </div>
+                      )}
+
+                      {/* List of Extracted Lines */}
+                      <div className="space-y-1.5 font-mono text-[11px]">
+                        {activeStagedFile.extractedLines.map((line, lIdx) => {
+                          const isEditing = editingLineIdx === lIdx;
+
+                          return (
+                            <div key={lIdx} className="p-1.5 bg-slate-50 hover:bg-slate-100/80 rounded border border-slate-200 flex items-center justify-between gap-1 group transition-colors">
+                              {isEditing ? (
+                                <div className="flex-1 flex items-center space-x-1 font-sans">
+                                  <input
+                                    type="text"
+                                    value={editingLineVal}
+                                    onChange={e => setEditingLineVal(e.target.value)}
+                                    className="flex-1 bg-white border border-teal-500 rounded px-1.5 py-0.5 text-[11px] font-mono"
+                                    autoFocus
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveEditLine(lIdx)}
+                                    className="p-1 bg-teal-600 text-white rounded hover:bg-teal-700"
+                                    title="Save change"
+                                  >
+                                    <Check className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingLineIdx(null)}
+                                    className="p-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300"
+                                    title="Cancel"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <span className="text-slate-800 truncate select-all">{line}</span>
+                                  <div className="flex items-center space-x-1 shrink-0 font-sans">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditLine(lIdx, line)}
+                                      className="p-0.5 text-slate-400 hover:text-teal-700 rounded"
+                                      title="Edit this extracted value"
+                                    >
+                                      <Edit2 className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteLine(lIdx)}
+                                      className="p-0.5 text-slate-400 hover:text-rose-600 rounded"
+                                      title="Delete this line"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -190,12 +190,29 @@ const createLabScanSvg = (
     const rest = (colon[1] || '').trim();
     const isHigh = rest.includes('*') || line.includes('HIGH') || (panelIndex === 1 && idx < 2) || (panelIndex === 2 && (idx === 0 || idx === 1 || idx === 3 || idx === 7));
     const flag = isHigh ? 'HIGH *' : (rest.includes('LOW') ? 'LOW *' : 'NORMAL');
-    const flagColor = isHigh ? '%23b91c1c' : (rest.includes('LOW') ? '%23d97706' : '%2315803d');
+    const flagColor = isHigh ? '#b91c1c' : (rest.includes('LOW') ? '#d97706' : '#15803d');
     const yPos = 210 + (idx * 28);
-    return `<text x="40" y="${yPos}" fill="%230f172a" font-family="monospace" font-size="11">${tName.padEnd(28, ' ')}</text><text x="280" y="${yPos}" fill="%230f172a" font-family="monospace" font-size="11">${rest.replace(/Ref:.*$/, '').trim().padEnd(16, ' ')}</text><text x="460" y="${yPos}" fill="${flagColor}" font-family="monospace" font-size="11" font-weight="bold">${flag}</text>`;
+    const cleanRest = rest.replace(/Ref:.*$/, '').trim();
+    return `<text x="40" y="${yPos}" fill="#0f172a" font-family="monospace" font-size="11">${tName}</text><text x="280" y="${yPos}" fill="#0f172a" font-family="monospace" font-size="11">${cleanRest}</text><text x="460" y="${yPos}" fill="${flagColor}" font-family="monospace" font-size="11" font-weight="bold">${flag}</text>`;
   }).join('');
 
-  return `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="780" viewBox="0 0 600 780" fill="%23ffffff"><rect width="600" height="780" fill="%23f8fafc" stroke="%23cbd5e1" stroke-width="2"/><rect x="30" y="30" width="540" height="90" rx="8" fill="${encodeURIComponent(battery.color)}"/><text x="50" y="65" fill="%23ffffff" font-family="sans-serif" font-weight="bold" font-size="17">${battery.headerText}</text><text x="50" y="90" fill="%23e2e8f0" font-family="sans-serif" font-size="10">${battery.subText}</text><text x="50" y="108" fill="%2394a3b8" font-family="sans-serif" font-size="9">PATIENT: ${encodeURIComponent(patientName.toUpperCase())} &bull; DATE: ${encodeURIComponent(dateStr)} &bull; STATUS: VERIFIED</text><line x1="30" y1="140" x2="570" y2="140" stroke="%23cbd5e1" stroke-width="1.5"/><text x="40" y="170" fill="%230f172a" font-family="monospace" font-size="12" font-weight="bold">PARAMETER NAME              RESULT / UNITS        FLAG / STATUS</text><line x1="30" y1="185" x2="570" y2="185" stroke="%230f172a" stroke-width="1"/>${rows}<rect x="30" y="660" width="540" height="85" rx="6" fill="%23f1f5f9" stroke="%23cbd5e1"/><text x="50" y="685" fill="%23334155" font-family="sans-serif" font-weight="bold" font-size="10">CLINICAL PATHOLOGY LABORATORY ACCREDITATION NOTE:</text><text x="50" y="705" fill="%2364748b" font-family="sans-serif" font-size="10">Document scanned via Optical Character Recognition (OCR) and validated for personal review.</text><text x="50" y="725" fill="%230f766e" font-family="sans-serif" font-weight="bold" font-size="9">CAP ACCREDITED &bull; CLIA ID #99D2084712 &bull; MEDICAL DIRECTOR VALIDATED</text></svg>`;
+  const svgRaw = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="780" viewBox="0 0 600 780" fill="#ffffff">
+    <rect width="600" height="780" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+    <rect x="30" y="30" width="540" height="90" rx="8" fill="${battery.color}"/>
+    <text x="50" y="65" fill="#ffffff" font-family="sans-serif" font-weight="bold" font-size="16">${battery.headerText.replace(/•/g, '-')}</text>
+    <text x="50" y="90" fill="#e2e8f0" font-family="sans-serif" font-size="10">${battery.subText.replace(/•/g, '-')}</text>
+    <text x="50" y="108" fill="#94a3b8" font-family="sans-serif" font-size="9">PATIENT: ${patientName.toUpperCase()} - DATE: ${dateStr} - STATUS: VERIFIED</text>
+    <line x1="30" y1="140" x2="570" y2="140" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="40" y="170" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">PARAMETER NAME              RESULT / UNITS        FLAG / STATUS</text>
+    <line x1="30" y1="185" x2="570" y2="185" stroke="#0f172a" stroke-width="1"/>
+    ${rows}
+    <rect x="30" y="660" width="540" height="85" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="50" y="685" fill="#334155" font-family="sans-serif" font-weight="bold" font-size="10">CLINICAL PATHOLOGY LABORATORY ACCREDITATION NOTE:</text>
+    <text x="50" y="705" fill="#64748b" font-family="sans-serif" font-size="10">Document scanned via Optical Character Recognition (OCR) and validated for personal review.</text>
+    <text x="50" y="725" fill="#0f766e" font-family="sans-serif" font-weight="bold" font-size="9">CAP ACCREDITED - CLIA ID #99D2084712 - MEDICAL DIRECTOR VALIDATED</text>
+  </svg>`;
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
 };
 
 // 5 Multi-Report Default Presets for 1-Click Multi-Scan Demonstrations

@@ -33,18 +33,20 @@ interface AddReportModalProps {
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'Unknown'];
 
-const PRESET_SAMPLE_TEXT = `Fasting Blood Glucose: 142 mg/dL (Ref: 70 - 99)
-HbA1c: 7.4 % (Ref: 4.0 - 5.6)
-Total Cholesterol: 235 mg/dL (Ref: < 200)
-LDL Cholesterol: 155 mg/dL (Ref: < 100)
-Triglycerides: 210 mg/dL (Ref: < 150)
-Serum Creatinine: 1.05 mg/dL (Ref: 0.70 - 1.30)
-eGFR: 82 mL/min (Ref: > 90)
-Hemoglobin: 12.8 g/dL (Ref: 13.5 - 17.5)
-Platelet Count: 215 x10^3/mcL (Ref: 150 - 450)
-ALT / SGPT: 48 U/L (Ref: 7 - 40)
-TSH: 5.8 mIU/L (Ref: 0.45 - 4.50)
-25-OH Vitamin D: 16.2 ng/mL (Ref: >= 30.0)`;
+const PRESET_SAMPLE_TEXT = `Insulin (Fasting): 1.76 uIU/mL (Ref: 2.0 - 18.4)
+Fasting Blood Sugar: 98.90 mg/dL (Ref: 70 - 105)
+HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: 2 - 5.7%)
+Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)
+Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)
+Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.01 - 11.29)
+Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)
+Hemoglobin: 12.1 g/dL (Ref: 12.0 - 15.0)
+White Blood Cells (WBC): 7800 cells/cumm (Ref: 4000 - 11000)
+Neutrophils: 58.7 % (Ref: 40 - 70)
+Lymphocytes: 32.4 % (Ref: 20 - 40)
+Platelet Count: 245000 cells/cumm (Ref: 150000 - 450000)
+Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)
+Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)`;
 
 interface ScannedReportDoc {
   id: string;
@@ -279,14 +281,18 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
       setTimeout(() => {
         setScanProgress(100);
         const sampleLines = [
-          'Insulin (Fasting): 1.71 uIU/mL (Ref: 2.0 - 18.4)',
-          'Fasting Blood Sugar: 86.90 mg/dL (Ref: 70 - 105)',
-          'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: < 5.7)',
+          'Insulin (Fasting): 1.76 uIU/mL (Ref: 2.0 - 18.4)',
+          'Fasting Blood Sugar: 98.90 mg/dL (Ref: 70 - 105)',
+          'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: 2 - 5.7%)',
           'Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)',
           'Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)',
-          'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.95 - 13.29)',
+          'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.01 - 11.29)',
           'Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)',
+          'Hemoglobin: 12.1 g/dL (Ref: 12.0 - 15.0)',
+          'White Blood Cells (WBC): 7800 cells/cumm (Ref: 4000 - 11000)',
           'Neutrophils: 58.7 % (Ref: 40 - 70)',
+          'Lymphocytes: 32.4 % (Ref: 20 - 40)',
+          'Platelet Count: 245000 cells/cumm (Ref: 150000 - 450000)',
           'Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)',
           'Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)'
         ];
@@ -1199,14 +1205,31 @@ export const AddReportModal: React.FC<AddReportModalProps> = ({
               />
 
               <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5">
-                <span>{rawText.split('\n').filter(l => l.trim()).length} test parameters detected</span>
-                <button
-                  type="button"
-                  onClick={() => setRawText(PRESET_SAMPLE_TEXT)}
-                  className="text-teal-700 hover:underline font-semibold"
-                >
-                  Reset to Sample Data
-                </button>
+                <span className="font-semibold text-slate-700">{rawText.split('\n').filter(l => l.trim()).length} test parameters detected</span>
+                <div className="flex items-center space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatientName('KSN');
+                      setDob('1986-03-03');
+                      setAge(40);
+                      setGender('Female');
+                      setBloodGroup('Unknown');
+                      setRawText(PRESET_SAMPLE_TEXT);
+                    }}
+                    className="text-teal-700 hover:text-teal-900 font-bold flex items-center space-x-1"
+                  >
+                    <Sparkles className="w-3 h-3 text-teal-600" />
+                    <span>Load KSN Diagnostic Results (14 Parameters)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRawText('')}
+                    className="text-slate-400 hover:text-slate-600 font-semibold"
+                  >
+                    Clear Text
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -172,7 +172,8 @@ export async function runRealOcr(
 
     if (onProgress) onProgress(30, 'Scanning text and laboratory tables...');
 
-    // PSM 6 (single uniform block) keeps each table row on one line, which is what lab reports need
+    // PSM 3 (fully automatic page segmentation) lets Tesseract recognize columnar tables,
+    // multi-panel layouts, and distinct text blocks accurately
     const worker = await Tesseract.createWorker('eng', 1, {
       logger: (m: any) => {
         if (m.status === 'recognizing text' && onProgress) {
@@ -182,7 +183,7 @@ export async function runRealOcr(
       }
     });
     await worker.setParameters({
-      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,
       preserve_interword_spaces: '1'
     } as any);
 
@@ -663,8 +664,63 @@ const NOISE_WORDS = [
   'female',
   'sample type',
   'lab no',
-  'diagnostic'
+  'diagnostic',
+  'printed on',
+  'printed'
 ];
+
+// Helper to determine if a line is a non-test section header or metadata banner
+export function isSectionHeader(line: string): boolean {
+  const cl = cleanStr(line);
+  if (!cl || cl.length < 3) return true;
+  if (cl.includes('by hplc') || 
+      cl.includes('whole blood edta') || 
+      cl.includes('plasma am') || 
+      cl.includes('plasma na') || 
+      cl.startsWith('thyroid profile') || 
+      cl.startsWith('lipid profile') || 
+      cl.startsWith('complete blood count') || 
+      cl.startsWith('complete urine') || 
+      cl.startsWith('biochemistry') || 
+      cl.startsWith('clinical pathology') || 
+      cl.includes('biological reference interval') || 
+      cl.includes('test name result unit') ||
+      cl.startsWith('page ') ||
+      cl.startsWith('printed on') ||
+      cl.startsWith('patient name') ||
+      cl.startsWith('collection date') ||
+      cl.startsWith('end of report')) {
+    return true;
+  }
+  return false;
+}
+
+// Stricter UNIT regex with word boundaries around short symbols to prevent 'page' -> 'pg' or 'flow' -> 'fl'
+const UNIT_RE = /\b(mg\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµ]?iu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµ]g\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i;
+
+const QUALITATIVE_RE = /\b(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
+
+const NAME_STOPWORDS = /\b(age|sex|gender|date|time|phone|mobile|mrn|uhid|reg|bill|sample|barcode|page|ref\.?\s*by|referred|dr|doctor|patient|name|address|pin|lab\s*no|report|collected|received|reported|printed|signature|years?|yrs|method|interval)\b/i;
+
+// Rejects OCR garbage (strings without vowels, single-letter tokens, or gibberish)
+function isValidMedicalWord(name: string): boolean {
+  const clean = name.trim();
+  if (clean.length < 2) return false;
+  // Strip parentheses and punctuation to check letters
+  const bare = clean.replace(/[(){}[\].,\/\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!bare) return false;
+  // Must have at least one vowel (a, e, i, o, u, y) or be a recognized acronym
+  if (!/[aeiouy]/i.test(bare) && !/\b(t3|t4|tsh|hb|ph|a1c|b12|esr|crp|wbc|rbc|mcv|mch|mchc|rdw|alp|ast|alt|ggt|bun|fbs|ppbs|tibc|hdl|ldl|vldl)\b/i.test(bare)) {
+    return false;
+  }
+  const words = bare.split(/\s+/).filter(Boolean);
+  // Single word: must be >= 2 characters
+  if (words.length === 1 && words[0].length < 2) return false;
+  // If words are mostly 1-2 char junk (e.g. "i I NY GO", "FN I IN Ge 75")
+  const shortJunk = words.filter(w => w.length <= 2 && !/\b(t3|t4|hb|ph|of|in|to|on|am|pm|by|na|ca|k|cl|fe)\b/i.test(w)).length;
+  if (words.length > 1 && shortJunk >= words.length * 0.5) return false;
+  return true;
+}
 
 // Robust Medical Parser that strictly validates test names and rejects OCR noise
 export function parseOcrTextToLabLines(ocrText: string): string[] {
@@ -673,29 +729,30 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
   const rawLines = ocrText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 1);
   const foundLines: string[] = [];
   const matchedTests = new Set<string>();
+  const seenKeys = new Set<string>();
   const consumedLines = new Set<number>();
 
   // PASS 1: Structured table rows (name + result + unit/ref range). Captures ALL tests on the
   // report, including ones not in the dictionary, while rejecting OCR debris.
-  const seenNames = new Set<string>();
   for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
     const row = parseGenericRow(rawLines[lineIdx]);
     if (!row) continue;
     const known = canonicalTest(row.name);
-    const finalName = known ? known.name : toTitle(row.name);
+    const finalName = known ? known.name : row.name;
     const key = cleanStr(finalName);
-    if (seenNames.has(key) || (known && matchedTests.has(known.name))) {
+    if (seenKeys.has(key) || (known && matchedTests.has(known.name))) {
       consumedLines.add(lineIdx);
       continue;
     }
     const unit = row.unit || known?.defaultUnit || '';
     const ref = row.ref || known?.defaultRef || 'Standard range';
     foundLines.push(`${finalName}: ${row.value}${unit ? ' ' + unit : ''} (Ref: ${ref})`);
-    seenNames.add(key);
+    seenKeys.add(key);
     if (known) matchedTests.add(known.name);
     consumedLines.add(lineIdx);
   }
 
+  // PASS 2: Fallback for known dictionary tests that may be slightly misaligned across table columns
   // Sort tests by alias length descending so longer/more specific tests match first
   const sortedTests = [...KNOWN_TESTS].sort((a, b) => {
     const maxA = Math.max(...a.aliases.map(al => al.length));
@@ -706,24 +763,10 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
   for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
     const line = rawLines[lineIdx];
     if (consumedLines.has(lineIdx)) continue;
+    if (isSectionHeader(line)) continue;
+
     const cleanedLine = cleanStr(line);
-
-    // Skip empty lines, pure numbers, or table headers
     if (!cleanedLine || cleanedLine.length < 2) continue;
-
-    // Skip section headers like "FASTING BLOOD SUGAR (PLASMA NA)", "HBA1C - GLYCOSYLATED HAEMOGLOBIN BY HPLC"
-    // when they are headers above the actual test table (indicated by "by hplc", "plasma na", "profile -", etc. without results)
-    const isSectionHeader = (cleanedLine.includes('by hplc') || 
-                             cleanedLine.includes('profile 1') || 
-                             cleanedLine.includes('whole blood edta') || 
-                             cleanedLine.includes('plasma na') ||
-                             cleanedLine.includes('method') ||
-                             NOISE_WORDS.some(noise => cleanedLine === noise || (cleanedLine.length < 35 && cleanedLine.startsWith(noise))));
-
-    // If section header has no number or is just title, skip to next line
-    if (isSectionHeader && !line.match(/\b\d+(\.\d+)?\b/)) {
-      continue;
-    }
 
     // Try matching against KNOWN_TESTS
     for (const test of sortedTests) {
@@ -756,13 +799,11 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
           }
         }
 
-        // If no numbers in the current line after alias, look ahead at next 1-2 lines (for table cell breakings)
+        // If no numbers in the current line after alias, look ahead at next line
         if (!textAfterTest.match(/\d/) && lineIdx + 1 < rawLines.length) {
           const nextL1 = rawLines[lineIdx + 1].trim();
-          const nextL2 = lineIdx + 2 < rawLines.length ? rawLines[lineIdx + 2].trim() : '';
-          // Ensure next line is not another test name or noise header
-          if (!NOISE_WORDS.some(n => cleanStr(nextL1).includes(n))) {
-            textAfterTest = `${nextL1} ${nextL2}`.trim();
+          if (!isSectionHeader(nextL1) && !NOISE_WORDS.some(n => cleanStr(nextL1).includes(n))) {
+            textAfterTest = nextL1;
           }
         }
 
@@ -774,9 +815,13 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
           else if (combined.includes('yellow')) val = 'Pale Yellow';
           else if (combined.includes('straw')) val = 'Straw Yellow';
           else if (combined.includes('clear')) val = 'Clear';
-          foundLines.push(`${test.name}: ${val} (Ref: ${test.defaultRef})`);
-          matchedTests.add(test.name);
-          consumedLines.add(lineIdx);
+          const key = cleanStr(test.name);
+          if (!seenKeys.has(key)) {
+            foundLines.push(`${test.name}: ${val} (Ref: ${test.defaultRef})`);
+            matchedTests.add(test.name);
+            seenKeys.add(key);
+            consumedLines.add(lineIdx);
+          }
           break;
         }
 
@@ -785,33 +830,30 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
           const combined = (line + ' ' + textAfterTest);
           const pusMatch = combined.match(/(\d+\s*[-to]\s*\d+)/i) || textAfterTest.match(/(\d+)/);
           const val = pusMatch ? pusMatch[0].replace(/\s+/g, '') : '3-4';
-          foundLines.push(`${test.name}: ${val} ${test.defaultUnit} (Ref: ${test.defaultRef})`);
-          matchedTests.add(test.name);
-          consumedLines.add(lineIdx);
+          const key = cleanStr(test.name);
+          if (!seenKeys.has(key)) {
+            foundLines.push(`${test.name}: ${val} ${test.defaultUnit} (Ref: ${test.defaultRef})`);
+            matchedTests.add(test.name);
+            seenKeys.add(key);
+            consumedLines.add(lineIdx);
+          }
           break;
         }
 
         // Numeric extraction
-        // Look for numbers in textAfterTest (handling decimal numbers like 86.90, 1.71, 108.3, 5.4, 9.48, 3.52)
         const numbers = textAfterTest.match(/\b\d+(\.\d+)?\b/g);
         if (numbers && numbers.length > 0) {
-          // Reject phone numbers, PIN codes, dates, barcode IDs, and demographics
+          // Reject phone numbers, PIN codes, barcodes, and isolated indices like '1' from 'PROFILE - 1'
           const validNum = numbers.find(n => {
             const val = parseFloat(n);
-            // Long numbers (>= 6 digits) are phone numbers or barcodes
             if (n.replace('.', '').length >= 6) return false;
-            // Test results are rarely over 10000 except platelet / WBC absolute counts
             if (val > 10000 && test.name !== 'Platelet Count' && test.name !== 'White Blood Cells (WBC)') return false;
-            // Reject 4-digit years (e.g. 1980 - 2030) if no lab unit on line
             if (val >= 1950 && val <= 2035 && !line.match(/(mg\/dL|mg\/dl|uIU|ng\/mL|ug\/dL|g\/dL)/i)) return false;
             return true;
           });
 
           if (!validNum) continue;
 
-          let resultVal = validNum;
-
-          // Extract reference range if present
           let refStr = test.defaultRef;
           const combined = `${line} ${textAfterTest}`;
           const rangeMatch = combined.match(/(\d+(\.\d+)?)\s*[-–—to]\s*(\d+(\.\d+)?)/i) || 
@@ -820,16 +862,19 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
             refStr = rangeMatch[0].trim();
           }
 
-          // Extract unit if present
           let unitStr = test.defaultUnit;
-          const unitMatch = combined.match(/(mg\/dL|mg\/dl|g\/dL|g\/dl|mmol\/L|uIU\/mL|uIU\/ml|mIU\/L|mIU\/ml|ng\/mL|ng\/ml|ug\/dL|ug\/dl|pg\/mL|umol\/L|fL|pg|%|x10\^3\/mcL|x10\^6\/mcL|U\/L|mm\/hr|mEq\/L|\/HPF)/i);
+          const unitMatch = combined.match(UNIT_RE);
           if (unitMatch) {
             unitStr = unitMatch[0];
           }
 
-          foundLines.push(`${test.name}: ${resultVal} ${unitStr} (Ref: ${refStr})`);
-          matchedTests.add(test.name);
-          consumedLines.add(lineIdx);
+          const key = cleanStr(test.name);
+          if (!seenKeys.has(key)) {
+            foundLines.push(`${test.name}: ${validNum} ${unitStr} (Ref: ${refStr})`);
+            matchedTests.add(test.name);
+            seenKeys.add(key);
+            consumedLines.add(lineIdx);
+          }
           break;
         }
       }
@@ -865,55 +910,77 @@ function canonicalTest(name: string): KnownTestDef | undefined {
 function toTitle(s: string): string {
   if (s !== s.toUpperCase()) return s;
   return s.toLowerCase().replace(/(^|[\s(\/-])([a-z])/g, (_, p, c) => p + c.toUpperCase())
-    .replace(/\b(Hba1c|Tsh|T3|T4|Tibc|Ldl|Hdl|Vldl|Mcv|Mch|Mchc|Rdw|Esr|Crp|Sgot|Sgpt|Alp|Ggt|Bun|Psa|Cea|Ldh)\b/gi, m => m.toUpperCase());
+    .replace(/\b(Hba1c|Tsh|T3|T4|Tibc|Ldl|Hdl|Vldl|Mcv|Mch|Mchc|Rdw|Esr|Crp|Sgot|Sgpt|Alp|Ggt|Bun|Psa|Cea|Ldh|Rbc|Wbc|Hp)\b/gi, m => m.toUpperCase());
 }
 
-const UNIT_RE = /(mg\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµ]?iu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµ]g\/dl|[uµ]g\/l|fl|pg|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)/i;
-const QUALITATIVE_RE = /^(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
-const NAME_STOPWORDS = /\b(age|sex|gender|date|time|phone|mobile|mrn|uhid|reg|bill|sample|barcode|page|ref\.?\s*by|referred|dr|doctor|patient|name|address|pin|lab\s*no|report|collected|received|reported|printed|signature|years?|yrs)\b/i;
-
 function parseGenericRow(line: string): { name: string; value: string; unit: string; ref: string } | null {
+  if (isSectionHeader(line)) return null;
   const text = line.replace(/[|_]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (text.length < 5 || text.length > 160) return null;
 
-  // Locate first result token: number, range like 3-4, or qualitative word, preceded by a name
-  const m = text.match(/^(.*?[A-Za-z][A-Za-z().,\/%\-\s]*?)\s*[:\-]?\s+([<>]?\s?\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?)(?=\s|$)(.*)$/);
-  let name: string, value: string, rest: string;
-  if (m) {
-    [, name, value, rest] = m;
-  } else {
-    const q = text.match(/^(.*?[A-Za-z]{3,}[A-Za-z().,\/\-\s]*?)\s*[:\-]?\s+(.+)$/);
-    if (!q || !QUALITATIVE_RE.test(q[2])) return null;
-    name = q[1];
-    value = q[2].match(QUALITATIVE_RE)![0];
-    rest = q[2].slice(value.length);
+  // Check for Pus cells / Epithelial cells with range like "3-4" or "1-2"
+  const rangeCellMatch = text.match(/^(pus\s*cells?|epithelial\s*cells?)\s*[:\-]?\s*(\d+\s*-\s*\d+)\s*(.*)$/i);
+  if (rangeCellMatch) {
+    const rawName = rangeCellMatch[1];
+    const val = rangeCellMatch[2].replace(/\s+/g, '');
+    const rest = rangeCellMatch[3] || '';
+    const unitM = rest.match(/(\/hpf|\/lpf)/i);
+    const refM = rest.match(/(\d+\s*-\s*\d+)/);
+    const canonicalName = rawName.toLowerCase().includes('pus') ? 'Urine Pus Cells' : 'Urine Epithelial Cells';
+    return {
+      name: canonicalName,
+      value: val,
+      unit: unitM ? unitM[0].toUpperCase() : '/HPF',
+      ref: refM ? refM[0] : '0 - 5'
+    };
   }
 
+  // Check for qualitative urine test (e.g. Colour | Pale Yellow, Appearance | Clear, Protein | Nil, Glucose | Absent, R.B.C | Nil)
+  const qualMatch = text.match(/^([A-Za-z. ]{2,30})\s*[:\-]?\s+(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b(.*)$/i);
+  if (qualMatch) {
+    const rawName = qualMatch[1].trim();
+    if (!isValidMedicalWord(rawName) || NAME_STOPWORDS.test(rawName)) return null;
+    let val = qualMatch[2].trim();
+    val = val.replace(/\b\w/g, c => c.toUpperCase());
+    const finalName = rawName.toLowerCase().includes('colour') || rawName.toLowerCase().includes('color') ? 'Urine Colour' :
+                      rawName.toLowerCase().includes('appearance') ? 'Urine Appearance' :
+                      toTitle(rawName);
+    return {
+      name: finalName,
+      value: val,
+      unit: '',
+      ref: finalName === 'Urine Colour' ? 'Pale Yellow / Amber' : 'Normal / Negative'
+    };
+  }
+
+  // Standard numeric row: Name followed by number (e.g. INSULIN (FASTING) 1.76 uIU/mL 2.0-18.4)
+  const m = text.match(/^(.*?[A-Za-z][A-Za-z().,\/%\-\s]*?)\s*[:\-]?\s+([<>]?\s?\d+(?:\.\d+)?)(?=\s|$)(.*)$/);
+  if (!m) return null;
+
+  let [, name, value, rest] = m;
   name = name.replace(/[:\-.,\s]+$/, '').trim();
-  const letters = (name.match(/[A-Za-z]/g) || []).length;
-  // Name must look like real words, not OCR debris such as "i I NY GO"
-  if (letters < 3 || letters / name.replace(/\s/g, '').length < 0.6) return null;
-  if (!/[A-Za-z]{3,}/.test(name)) return null;
-  const words = name.split(/\s+/);
-  const shortJunk = words.filter(w => w.length <= 2 && !/^(t3|t4|hb|ph|a1c|b12|of|in|c)$/i.test(w)).length;
-  if (shortJunk > words.length / 2) return null;
+
+  if (!isValidMedicalWord(name)) return null;
   if (NAME_STOPWORDS.test(name)) return null;
   if (NOISE_WORDS.some(n => cleanStr(name) === n)) return null;
 
-  const isQual = QUALITATIVE_RE.test(value);
-  value = isQual ? value.replace(/\s+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : value.replace(/\s+/g, '');
+  value = value.replace(/\s+/g, '');
   const numeric = parseFloat(value.replace(/^[<>]/, ''));
-  if (!isNaN(numeric) && (value.replace(/\D/g, '').length >= 7)) return null; // phone/barcode
+  if (isNaN(numeric)) return null;
+  if (value.replace(/\D/g, '').length >= 7) return null; // phone/barcode
 
+  // Find unit and reference interval
   const unitMatch = rest.match(UNIT_RE);
-  const refMatch = rest.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/) || rest.match(/[<>]=?\s*\d+(?:\.\d+)?/);
-  const isQualitative = isNaN(numeric) || QUALITATIVE_RE.test(value);
+  const refMatch = rest.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/) || rest.match(/[<>]=?\s*\d+(?:\.\d+)?%?/);
 
-  // Require evidence that this is a lab row
-  if (!isQualitative && !unitMatch && !refMatch) return null;
+  const known = canonicalTest(name);
+  const isKnownUnitless = known && (known.name.includes('pH') || known.name.includes('Specific Gravity'));
+
+  // Require evidence that this is a lab row (either a recognized unit OR a reference interval OR known unitless test)
+  if (!unitMatch && !refMatch && !isKnownUnitless) return null;
 
   return {
-    name: name.replace(/\b([a-z])/g, c => c.toUpperCase()),
+    name: toTitle(name),
     value,
     unit: unitMatch ? unitMatch[0] : '',
     ref: refMatch ? refMatch[0].trim() : ''

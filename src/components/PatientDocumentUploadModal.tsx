@@ -576,37 +576,95 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
     runBatchAIScanner(list);
   };
 
-  // 1-Click Load KSN Diagnostic Pathology Scan (Exact User Scan - 10 Parameters)
+  // 1-Click Load KSN Diagnostic Pathology 5-Scan Battery (All Uploaded Scan Reports)
   const handleLoadKsnScanBattery = () => {
-    const ksnLines = [
-      'Insulin (Fasting): 1.71 uIU/mL (Ref: 2.0 - 18.4)',
-      'Fasting Blood Sugar: 86.90 mg/dL (Ref: 70 - 105)',
-      'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: < 5.7)',
-      'Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)',
-      'Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)',
-      'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.95 - 13.29)',
-      'Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)',
-      'Neutrophils: 58.7 % (Ref: 40 - 70)',
-      'Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)',
-      'Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)'
+    const ksnScans = [
+      {
+        title: 'Endocrine & Glycemic Panel (Insulin & Glucose)',
+        category: 'Blood Sugar & Diabetes Screening' as MedicalCategory,
+        labName: 'Thyrocare Diagnostic Technologies',
+        date: 'October 23, 2026',
+        lines: [
+          'Insulin (Fasting): 1.76 uIU/mL (Ref: 2.0 - 18.4)',
+          'Fasting Blood Sugar: 98.90 mg/dL (Ref: 70 - 105)',
+          'HbA1c (Glycosylated Hemoglobin): 5.4 % (Ref: 2 - 5.7%)',
+          'Estimated Average Glucose: 108.3 mg/dL (Ref: 70 - 126)'
+        ]
+      },
+      {
+        title: 'Thyroid Function Profile - I (T3, T4, TSH)',
+        category: 'Thyroid Function' as MedicalCategory,
+        labName: 'Thyrocare Diagnostic Technologies',
+        date: 'October 23, 2026',
+        lines: [
+          'Tri-iodothyronine (T3, Total): 1.12 ng/mL (Ref: 0.87 - 1.78)',
+          'Thyroxine (T4, Total): 9.48 ug/dL (Ref: 5.01 - 11.29)',
+          'Thyroid Stimulating Hormone (TSH): 3.52 uIU/mL (Ref: 0.38 - 5.33)'
+        ]
+      },
+      {
+        title: 'Complete Blood Count (CBC) with Differential',
+        category: 'Complete Blood Count (CBC)' as MedicalCategory,
+        labName: 'Quest & Thyrocare Diagnostic Pathology',
+        date: 'October 21, 2026',
+        lines: [
+          'Hemoglobin: 12.1 g/dL (Ref: 12.0 - 15.0)',
+          'White Blood Cells (WBC): 7800 cells/cumm (Ref: 4000 - 11000)',
+          'Neutrophils: 58.7 % (Ref: 40 - 70)',
+          'Lymphocytes: 32.4 % (Ref: 20 - 40)',
+          'Monocytes: 5.2 % (Ref: 2 - 10)',
+          'Eosinophils: 3.1 % (Ref: 1 - 6)',
+          'Basophils: 0.6 % (Ref: 0 - 1)',
+          'Platelet Count: 245000 cells/cumm (Ref: 150000 - 450000)'
+        ]
+      },
+      {
+        title: 'Complete Urine Examination (CUE)',
+        category: 'Kidney Function' as MedicalCategory,
+        labName: 'Quest & Thyrocare Diagnostic Pathology',
+        date: 'October 19, 2026',
+        lines: [
+          'Urine Colour: Pale Yellow (Ref: Pale Yellow / Amber)',
+          'Urine Appearance: Clear (Ref: Clear)',
+          'Urine pH: 6.0 (Ref: 4.5 - 8.0)',
+          'Urine Specific Gravity: 1.020 (Ref: 1.005 - 1.030)',
+          'Urine Pus Cells: 3-4 /HPF (Ref: 0 - 5)',
+          'Urine Epithelial Cells: 1-2 /HPF (Ref: 0 - 5)',
+          'Protein: Nil (Ref: Negative)',
+          'Glucose: Absent (Ref: Negative)'
+        ]
+      },
+      {
+        title: 'Iron Studies & Nutritional Panel',
+        category: 'Vitamins & Nutritional Markers' as MedicalCategory,
+        labName: 'Quest Diagnostics',
+        date: 'October 17, 2026',
+        lines: [
+          'Serum Iron: 64 ug/dL (Ref: 50 - 170)',
+          'TIBC: 310 ug/dL (Ref: 250 - 450)',
+          'Serum Calcium: 9.2 mg/dL (Ref: 8.5 - 10.2)'
+        ]
+      }
     ];
 
-    const ksnParsed = ksnLines.map((l, idx) => parseLineToTest(l, idx, 1)).filter(Boolean) as LabTest[];
-
-    const ksnItem: StagedReportFile = {
-      id: `ksn-scan-${Date.now()}`,
-      name: 'KSN_Diagnostic_Laboratory_Slip.pdf',
-      type: 'application/pdf',
-      size: '1.4 MB',
-      reportTitle: 'Clinical Pathology & Endocrine Panel (KSN)',
-      reportDate: 'October 23, 2026',
-      collectionDate: 'October 23, 2026 (08:00 AM)',
-      labName: 'Thyrocare & Quest Diagnostic Laboratories',
-      category: 'Thyroid Function',
-      extractedLines: ksnLines,
-      parsedTests: ksnParsed,
-      scanStatus: 'done'
-    };
+    const staged: StagedReportFile[] = ksnScans.map((scan, idx) => {
+      const parsed = scan.lines.map((l, lIdx) => parseLineToTest(l, lIdx, idx + 1)).filter(Boolean) as LabTest[];
+      return {
+        id: `ksn-scan-${Date.now()}-${idx + 1}`,
+        name: `KSN_Scan_${idx + 1}_${scan.category.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`,
+        type: 'application/pdf',
+        size: `${(1.2 + idx * 0.1).toFixed(1)} MB`,
+        reportTitle: scan.title,
+        reportDate: scan.date,
+        collectionDate: `${scan.date} (08:00 AM)`,
+        labName: scan.labName,
+        category: scan.category,
+        previewUrl: createLabScanSvg(idx, scan.title, 'KSN', scan.date, scan.labName),
+        extractedLines: scan.lines,
+        parsedTests: parsed,
+        scanStatus: 'done'
+      };
+    });
 
     setPatientMode('new');
     setNewFullName('KSN');
@@ -615,8 +673,8 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
     setNewGender('Female');
     setNewBloodGroup('Unknown');
 
-    setStagedFiles([ksnItem]);
-    setActiveFileId(ksnItem.id);
+    setStagedFiles(staged);
+    setActiveFileId(staged[0].id);
   };
 
   // Inline Line Editing Handlers
@@ -733,10 +791,9 @@ export const PatientDocumentUploadModal: React.FC<PatientDocumentUploadModalProp
       targetPatient = selectedPatient;
     }
 
-    // 2. Parse and ensure all staged files have their test arrays populated
+    // 2. Parse and ensure all staged files have their test arrays populated (DO NOT inject fake battery lines)
     const preparedFiles = stagedFiles.map((item, docIdx) => {
-      const battery = CLINICAL_BATTERIES[docIdx % CLINICAL_BATTERIES.length];
-      const lines = item.extractedLines.length > 0 ? item.extractedLines : [...battery.lines];
+      const lines = item.extractedLines || [];
       const tests = item.parsedTests.length > 0 
         ? item.parsedTests 
         : (lines.map((l, lIdx) => parseLineToTest(l, lIdx, docIdx + 1)).filter(Boolean) as LabTest[]);

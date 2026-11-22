@@ -18,9 +18,16 @@ export interface ExtractedOcrResult {
 export async function preprocessImage(imageSource: string | File): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    if (typeof imageSource === 'string' && imageSource.startsWith('http')) {
+      img.crossOrigin = 'anonymous';
+    }
+    let objectUrlToRevoke: string | null = null;
+
     img.onload = () => {
       try {
+        if (objectUrlToRevoke) {
+          URL.revokeObjectURL(objectUrlToRevoke);
+        }
         const natW = img.naturalWidth || img.width;
         const natH = img.naturalHeight || img.height;
         if (!natW || !natH) {
@@ -119,17 +126,15 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
       }
     };
     img.onerror = () => {
+      if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
       resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
     };
 
     if (typeof imageSource === 'string') {
       img.src = imageSource;
     } else {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        img.src = e.target?.result as string;
-      };
-      reader.readAsDataURL(imageSource);
+      objectUrlToRevoke = URL.createObjectURL(imageSource);
+      img.src = objectUrlToRevoke;
     }
   });
 }
@@ -796,7 +801,7 @@ function scaleRefRange(knownName: string, ref: string, line?: string): string {
 }
 
 // Broad, robust unit regex matching both standard units and Tesseract OCR character substitutions
-const UNIT_RE = /(?:%|\b(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i;
+const UNIT_RE = /(?:%|\b(mg\/dl|me\/dl|mera|r[oe]?g\/[de]l|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i;
 
 const QUALITATIVE_RE = /\b(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
 
@@ -827,7 +832,7 @@ function normalizeUnit(u: string): string {
   const cl = u.toLowerCase().replace(/\s+/g, '');
   if (/^[uµw]i?u\/m[l]|wuml|wiu\/ml|wlu\/ml|wu\/ml/.test(cl)) return 'uIU/mL';
   if (/^[uµp]g\/d[l]|p\/dl/.test(cl)) return 'ug/dL';
-  if (/^m[ge]\/d[l]/.test(cl)) return 'mg/dL';
+  if (/^(?:m[ge]|ro?g|me)\/[de][l]|mera/.test(cl)) return 'mg/dL';
   return u;
 }
 
@@ -925,7 +930,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
 
     // 5. Find result value: The number immediately preceding the unit, OR first valid number after test name
     let val = '';
-    const numBeforeUnitMatch = textWithoutAcronymDigits.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|'"`\[\(,–—\-_\s]+)?(%|\b(?:mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i);
+    const numBeforeUnitMatch = textWithoutAcronymDigits.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|'"`\[\(,–—\-_\s]+)?(%|\b(?:mg\/dl|me\/dl|mera|r[oe]?g\/[de]l|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i);
 
     if (numBeforeUnitMatch) {
       val = numBeforeUnitMatch[1].replace(/\s+/g, '');

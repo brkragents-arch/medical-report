@@ -14,7 +14,7 @@ export interface ExtractedOcrResult {
   confidence: number;
 }
 
-// Pre-process image on canvas to remove table grid lines and upscale for optimal OCR character definition
+// Pre-process image on canvas with high-contrast character enhancement
 export async function preprocessImage(imageSource: string | File): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -25,9 +25,6 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
 
     img.onload = () => {
       try {
-        if (objectUrlToRevoke) {
-          URL.revokeObjectURL(objectUrlToRevoke);
-        }
         const natW = img.naturalWidth || img.width;
         const natH = img.naturalHeight || img.height;
         if (!natW || !natH) {
@@ -35,98 +32,50 @@ export async function preprocessImage(imageSource: string | File): Promise<strin
           return;
         }
 
-        // Step 1: Work on natural resolution canvas to remove table grid borders cleanly
+        // Upscale with slight contrast enhancement for crisp character definition
+        const scale = Math.max(1.5, Math.min(2.5, 2400 / natW));
         const canvas = document.createElement('canvas');
-        canvas.width = natW;
-        canvas.height = natH;
+        canvas.width = Math.round(natW * scale);
+        canvas.height = Math.round(natH * scale);
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
           return;
         }
 
-        ctx.drawImage(img, 0, 0, natW, natH);
-        const imgData = ctx.getImageData(0, 0, natW, natH);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Gentle contrast boost for OCR clarity without destructive line wiping
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const d = imgData.data;
-
-        // Binarize with 160 luminance threshold
-        const binary = new Uint8Array(natW * natH);
-        for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+        for (let i = 0; i < d.length; i += 4) {
           const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          binary[p] = lum < 160 ? 0 : 255;
-        }
-
-        // Remove horizontal table grid lines (black runs >= 35px or 4% of width)
-        const hThresh = Math.max(35, Math.round(natW * 0.04));
-        for (let y = 0; y < natH; y++) {
-          let runStart = -1;
-          const yOff = y * natW;
-          for (let x = 0; x < natW; x++) {
-            const isBlack = binary[yOff + x] === 0;
-            if (isBlack && runStart === -1) {
-              runStart = x;
-            } else if (!isBlack && runStart !== -1) {
-              if (x - runStart >= hThresh) {
-                for (let k = runStart; k < x; k++) binary[yOff + k] = 255;
-              }
-              runStart = -1;
-            }
+          if (lum > 210) {
+            d[i] = 255;
+            d[i + 1] = 255;
+            d[i + 2] = 255;
+          } else if (lum < 110) {
+            d[i] = 0;
+            d[i + 1] = 0;
+            d[i + 2] = 0;
           }
-          if (runStart !== -1 && natW - runStart >= hThresh) {
-            for (let k = runStart; k < natW; k++) binary[yOff + k] = 255;
-          }
-        }
-
-        // Remove vertical table grid lines (black runs >= 25px or 3.5% of height)
-        const vThresh = Math.max(25, Math.round(natH * 0.035));
-        for (let x = 0; x < natW; x++) {
-          let runStart = -1;
-          for (let y = 0; y < natH; y++) {
-            const isBlack = binary[y * natW + x] === 0;
-            if (isBlack && runStart === -1) {
-              runStart = y;
-            } else if (!isBlack && runStart !== -1) {
-              if (y - runStart >= vThresh) {
-                for (let k = runStart; k < y; k++) binary[k * natW + x] = 255;
-              }
-              runStart = -1;
-            }
-          }
-          if (runStart !== -1 && natH - runStart >= vThresh) {
-            for (let k = runStart; k < natH; k++) binary[k * natW + x] = 255;
-          }
-        }
-
-        // Write cleaned binary back to 1:1 canvas
-        for (let p = 0, i = 0; p < binary.length; p++, i += 4) {
-          const v = binary[p];
-          d[i] = v;
-          d[i + 1] = v;
-          d[i + 2] = v;
-          d[i + 3] = 255;
         }
         ctx.putImageData(imgData, 0, 0);
-
-        // Step 2: Upscale 2.5x with high-quality bicubic smoothing for crisp OCR character edges
-        const scale = Math.max(2, Math.min(3.5, 2400 / natW));
-        const upCanvas = document.createElement('canvas');
-        upCanvas.width = Math.round(natW * scale);
-        upCanvas.height = Math.round(natH * scale);
-        const upCtx = upCanvas.getContext('2d');
-        if (upCtx) {
-          upCtx.imageSmoothingEnabled = true;
-          upCtx.imageSmoothingQuality = 'high';
-          upCtx.drawImage(canvas, 0, 0, upCanvas.width, upCanvas.height);
-          resolve(upCanvas.toDataURL('image/png'));
-        } else {
-          resolve(canvas.toDataURL('image/png'));
-        }
+        resolve(canvas.toDataURL('image/png'));
       } catch (err) {
         resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
+      } finally {
+        if (objectUrlToRevoke) {
+          try { URL.revokeObjectURL(objectUrlToRevoke); } catch (e) {}
+        }
       }
     };
     img.onerror = () => {
-      if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
+      if (objectUrlToRevoke) {
+        try { URL.revokeObjectURL(objectUrlToRevoke); } catch (e) {}
+      }
       resolve(typeof imageSource === 'string' ? imageSource : URL.createObjectURL(imageSource));
     };
 
@@ -195,8 +144,15 @@ export async function runRealOcr(
   fileOrUrl: File | string,
   onProgress?: (percent: number, status: string) => void
 ): Promise<ExtractedOcrResult> {
+  let createdObjectUrl: string | null = null;
   try {
-    let targetSource: string = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl);
+    let targetSource: string;
+    if (typeof fileOrUrl === 'string') {
+      targetSource = fileOrUrl;
+    } else {
+      targetSource = URL.createObjectURL(fileOrUrl);
+      createdObjectUrl = targetSource;
+    }
     let sources: string[] = [targetSource];
 
     // If PDF file, attempt digital text extraction first
@@ -219,9 +175,6 @@ export async function runRealOcr(
       } else if (pdfRes.canvasUrl) {
         sources = [pdfRes.canvasUrl];
       }
-    } else if (typeof fileOrUrl !== 'string' && fileOrUrl.type.startsWith('image/')) {
-      if (onProgress) onProgress(15, 'Preparing scan image for optical character recognition...');
-      sources = [await preprocessImage(fileOrUrl)];
     }
 
     if (onProgress) onProgress(30, 'Scanning text and laboratory tables...');
@@ -248,11 +201,30 @@ export async function runRealOcr(
       rawText += (r.data.text || '') + '\n';
       confSum += r.data.confidence || 0;
     }
-    await worker.terminate();
-    const confidence = sources.length ? confSum / sources.length : 0;
 
     // Parse text into structured lines using clean medical validation
-    const extractedLines = parseOcrTextToLabLines(rawText);
+    let extractedLines = parseOcrTextToLabLines(rawText);
+
+    // If fewer than 4 parameters were found on raw image, try secondary pass with enhanced contrast/resolution
+    if (extractedLines.length < 4 && typeof fileOrUrl !== 'string' && fileOrUrl.type.startsWith('image/')) {
+      try {
+        if (onProgress) onProgress(80, 'Refining laboratory table segmentation...');
+        const enhancedSource = await preprocessImage(fileOrUrl);
+        if (enhancedSource && enhancedSource !== targetSource) {
+          const r2 = await worker.recognize(enhancedSource);
+          const lines2 = parseOcrTextToLabLines(r2.data.text || '');
+          if (lines2.length > extractedLines.length) {
+            extractedLines = lines2;
+            rawText = (r2.data.text || '') + '\n' + rawText;
+          }
+        }
+      } catch (enhErr) {
+        console.warn('Enhanced OCR pass skipped:', enhErr);
+      }
+    }
+
+    await worker.terminate();
+    const confidence = sources.length ? confSum / sources.length : 0;
 
     if (onProgress) onProgress(100, `OCR complete! Extracted ${extractedLines.length} validated parameters.`);
 
@@ -268,6 +240,10 @@ export async function runRealOcr(
       extractedLines: [],
       confidence: 0
     };
+  } finally {
+    if (createdObjectUrl) {
+      try { URL.revokeObjectURL(createdObjectUrl); } catch (e) {}
+    }
   }
 }
 

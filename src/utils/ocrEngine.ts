@@ -722,6 +722,13 @@ const NOISE_WORDS = [
 export function isSectionHeader(line: string): boolean {
   const cl = cleanStr(line);
   if (!cl || cl.length < 3) return true;
+
+  // Specimen/method section headers like "( PLASMA NAF )", "( WHOLE BLOOD-EDTA )", "( SERUM )", "BY HPLC"
+  if (/\((?:plasma|serum|edta|whole\s*blood|hplc|na[f\d]|r1asma)[^)]*\)/i.test(line) ||
+      /\[(?:plasma|serum|edta|whole\s*blood|hplc|na[f\d]|r1asma)[^\]]*\]/i.test(line)) {
+    return true;
+  }
+
   // If line starts with '[' or '(' and has specimen/method/profile markers, it's a section header banner!
   const trimmed = line.trim();
   if (trimmed.startsWith('[') || trimmed.startsWith('(')) {
@@ -779,8 +786,9 @@ function scaleDecimal(knownName: string, val: string): string {
   return val;
 }
 
-function scaleRefRange(ref: string): string {
-  if (!ref) return ref;
+function scaleRefRange(knownName: string, ref: string, line?: string): string {
+  if (knownName.includes('HbA1c') && line && /2\s*[-–—]?\s*6\s*%?/i.test(line)) return '2 - 6 %';
+  if (ref && /5\.9[35]\s*[-–—]\s*13\.2[09]/i.test(ref)) return '5.93 - 13.29';
   if (ref === '20-184' || ref === '20 - 184') return '2.0 - 18.4';
   if (ref === '87-178' || ref === '87 - 178' || ref === '087-178') return '0.87 - 1.78';
   if (ref === '38-533' || ref === '38 - 533' || ref === '038-533') return '0.38 - 5.33';
@@ -788,7 +796,7 @@ function scaleRefRange(ref: string): string {
 }
 
 // Broad, robust unit regex matching both standard units and Tesseract OCR character substitutions
-const UNIT_RE = /\b(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i;
+const UNIT_RE = /(?:%|\b(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i;
 
 const QUALITATIVE_RE = /\b(negative|positive|nil|absent|present|trace|clear|turbid|slightly turbid|pale yellow|yellow|straw|amber|reactive|non[- ]reactive|normal)\b/i;
 
@@ -894,7 +902,7 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
     // 1. Extract reference range first (e.g. "70 - 105", "0.87 - 1.78", "2.0 - 18.4")
     const rangeMatch = line.match(/(\d+(?:\.\d+)?)\s*[-–—to]\s*(\d+(?:\.\d+)?)/i);
     let refRange = rangeMatch ? rangeMatch[0].trim() : known.defaultRef;
-    refRange = scaleRefRange(refRange);
+    refRange = scaleRefRange(known.name, refRange, line);
 
     // 2. Remove reference range so range bounds are NEVER mistaken for test result!
     let textWithoutRange = line;
@@ -906,24 +914,33 @@ export function parseOcrTextToLabLines(ocrText: string): string[] {
     const unitMatch = line.match(UNIT_RE);
     let unit = unitMatch ? normalizeUnit(unitMatch[0]) : known.defaultUnit;
 
-    // 4. In test names like "TRI-IODOTHYRONINE (T3, TOTAL)" or "THYROXINE (T4, TOTAL)",
+    // 4. In test names like "TRI-IODOTHYRONINE (T3, TOTAL)" or "THYROXINE (T4, TOTAL)" or "HBA1C",
     // remove digits inside acronyms/parentheses without erasing the rest of the line
     const textWithoutAcronymDigits = textWithoutRange
       .replace(/\([Tt]?[0-9]{1,2}[,\s]/gi, ' ') // removes (T3, (13, (T4,
       .replace(/\([A-Za-z\s,]+\)/g, ' ')        // removes (FASTING), (TOTAL), etc.
-      .replace(/\b[Tt]\d+\b/gi, ' ');           // removes bare T3, T4
+      .replace(/\b[Tt]\d+\b/gi, ' ')            // removes bare T3, T4
+      .replace(/\bhba?1c\b/gi, ' ')             // removes HbA1c (so digit 1 is never captured!)
+      .replace(/\ba1c\b/gi, ' ');
 
     // 5. Find result value: The number immediately preceding the unit, OR first valid number after test name
     let val = '';
-    const numBeforeUnitMatch = textWithoutAcronymDigits.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|'"`\[\(,–—\-_\s]+)?(mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|%|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b/i);
+    const numBeforeUnitMatch = textWithoutAcronymDigits.match(/([<>]?\s*\d+(?:\.\d+)?)\s*(?:[|'"`\[\(,–—\-_\s]+)?(%|\b(?:mg\/dl|me\/dl|gm\/dl|g\/dl|g\/l|mg\/l|mmol\/l|umol\/l|µmol\/l|meq\/l|[uµwW]i?u\/m[lL]|wuml|wiu\/ml|wlu\/ml|wu\/ml|miu\/l|miu\/ml|ng\/ml|ng\/dl|pg\/ml|[uµpP]g\/d[lL]|p\/dl|[uµ]g\/l|\bfl\b|\bpg\b|cells\/cumm|\/cumm|\/cmm|lakhs?\/cumm|mill?ions?\/cumm|x?10\^?[36]\/[uµ]l|x10\^?[36]\/mcl|\/[uµ]l|u\/l|iu\/l|mm\/hr|mm\/1st\s*hr|\/hpf|\/lpf|sec(?:onds)?|ml\/min(?:\/1\.73\s*m2)?)\b)/i);
 
     if (numBeforeUnitMatch) {
       val = numBeforeUnitMatch[1].replace(/\s+/g, '');
       if (!unit) unit = normalizeUnit(numBeforeUnitMatch[2]);
     } else {
-      const nums = textWithoutAcronymDigits.match(/[<>]?\s*\d+(?:\.\d+)?/g);
-      if (nums && nums.length > 0) {
-        val = nums[0].replace(/\s+/g, '');
+      // If no number before unit, look for number that is NOT in the reference range
+      const isKnownUnitless = known.name.includes('pH') || known.name.includes('Specific Gravity');
+      if (isKnownUnitless || rangeMatch) {
+        const nums = textWithoutAcronymDigits.match(/[<>]?\s*\d+(?:\.\d+)?/g);
+        if (nums && nums.length > 0) {
+          const candidate = nums[0].replace(/\s+/g, '');
+          if (!rangeMatch || (candidate !== rangeMatch[1] && candidate !== rangeMatch[2])) {
+            val = candidate;
+          }
+        }
       }
     }
 

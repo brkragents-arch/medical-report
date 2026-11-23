@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { PatientSummaryCard } from './components/PatientSummaryCard';
 import { KeyFindingsPanel } from './components/KeyFindingsPanel';
+import { MedicalCalculatorsPanel } from './components/MedicalCalculatorsPanel';
 import { CategoryCardsGrid } from './components/CategoryCardsGrid';
 import { EarlyPredictionsPanel } from './components/EarlyPredictionsPanel';
 import { LabResultsTable } from './components/LabResultsTable';
@@ -172,6 +173,11 @@ export function App() {
         <KeyFindingsPanel
           findings={currentReport.keyFindings}
           onSelectTest={(tId) => setSelectedTestId(tId)}
+        />
+
+        {/* Section: Medical Calculators & MDCalc Clinical Risk Scores */}
+        <MedicalCalculatorsPanel
+          report={currentReport}
         />
 
         {/* Section: Early Predictive Risk Estimations & Biomarkers */}

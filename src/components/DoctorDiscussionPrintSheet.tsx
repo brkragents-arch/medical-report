@@ -10,6 +10,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { LabReport } from '../types';
+import { computeAllMedicalCalculators } from '../utils/medicalCalculators';
 
 interface DoctorDiscussionPrintSheetProps {
   report: LabReport;
@@ -20,6 +21,8 @@ export const DoctorDiscussionPrintSheet: React.FC<DoctorDiscussionPrintSheetProp
   report,
   onClose
 }) => {
+  const calcData = computeAllMedicalCalculators(report);
+
   const handlePrint = () => {
     window.print();
   };
@@ -88,6 +91,43 @@ export const DoctorDiscussionPrintSheet: React.FC<DoctorDiscussionPrintSheetProp
                     <span className="font-mono text-teal-800">{f.reportedResult}</span>
                   </div>
                   <p className="text-[11px] text-slate-600">{f.whyItMatters}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Evidence-Based Medical Calculators & Clinical Risk Scores (MDCalc) */}
+          <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-200 mb-5">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-bold text-blue-950 text-xs uppercase tracking-wider">
+                Evidence-Based Medical Calculators &amp; Risk Equations (MDCalc Aligned):
+              </h4>
+              <span className="text-[10px] text-blue-700 font-semibold">
+                Auto-computed from Lab Results &amp; Physiologic Vitals
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {calcData.allCalculators.map((c) => (
+                <div key={c.id} className="bg-white p-2 rounded-lg border border-blue-100 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-slate-900 text-[11px]">{c.acronym}</span>
+                      <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${c.tierColor.badge}`}>
+                        {c.tier}
+                      </span>
+                    </div>
+                    <div className="text-sm font-black text-slate-950 mt-1 font-mono">
+                      {c.displayValue} <span className="text-[10px] font-normal text-slate-500">{c.unit}</span>
+                    </div>
+                    {c.thirtyYearRiskPercent !== undefined && (
+                      <div className="text-[10px] font-bold text-indigo-800 font-mono">
+                        30-Yr Est: {c.thirtyYearRiskPercent}% <span className="font-sans font-normal text-[9px] text-indigo-600">({c.thirtyYearTier})</span>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[9px] text-slate-500 mt-1 line-clamp-1" title={c.referenceRangeText}>
+                    Ref: {c.referenceRangeText}
+                  </p>
                 </div>
               ))}
             </div>

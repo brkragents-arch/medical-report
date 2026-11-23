@@ -25,7 +25,8 @@ import {
   ChevronDown,
   ChevronUp,
   CheckCircle2,
-  Plus
+  Plus,
+  Calculator
 } from 'lucide-react';
 import { LabReport } from '../types';
 
@@ -111,6 +112,17 @@ export const PatientSummaryCard: React.FC<PatientSummaryCardProps> = ({
                 <span>Edit Vitals &amp; Profile</span>
               </button>
             )}
+            <button
+              onClick={() => {
+                const elem = document.getElementById('medical-calculators-panel');
+                if (elem) elem.scrollIntoView({ behavior: 'smooth' });
+              }}
+              className="inline-flex items-center text-[11px] font-semibold text-teal-800 hover:text-teal-900 bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200 hover:bg-teal-100 transition-colors shadow-2xs"
+              title="Jump down to Medical Calculators (eGFR, FIB-4, BRI, MAP, CrCl, PREVENT CVD, ASCVD, Heart Failure, STOP-BANG, HOMA-IR)"
+            >
+              <Calculator className="w-3 h-3 mr-1 text-teal-700" />
+              <span>Medical Calculators (10)</span>
+            </button>
             <button
               onClick={() => {
                 const elem = document.getElementById('early-predictions-panel');
